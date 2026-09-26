@@ -3,6 +3,7 @@ helper/config.json
 helper/logs/
 private/
 .claude/
+tools/
 
 # OS clutter
 Thumbs.db

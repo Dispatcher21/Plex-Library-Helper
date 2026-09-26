@@ -16,13 +16,25 @@
     qa  the same, without that check: sent only when the dashboard has confirmed another copy
         exists elsewhere, or you explicitly chose to quarantine the last copy.
 
+  Compression jobs (label format  pldc:<jobId>:<action>:<mediaId>:<state>[:<info>])
+    A separate prefix, so helpers older than 0.3 ignore them instead of failing them.
+    ce  estimate: encode three short samples and report predicted size, time and quality
+    c   compress: encode the whole movie and add it next to the original (never replaces it)
+    Queued info carries the options: p=<preset>;a=<keep|small>;r=<plex+game+idle+night>.
+    Only a helper set up with -EnableCompress takes these; it reads files on its own drives or over
+    the network, and runs compress.ps1 as a separate process so quarantines keep working meanwhile.
+    States: queued -> run:<percent>;<seconds left>;<phase or pause reason> -> done / fail.
+    The dashboard asks to stop a running one by changing its state to "stop".
+
   Usage
-    library-helper.ps1 -Setup    one-time: sign in with Plex and pick the server
-    library-helper.ps1           run forever (what the scheduled task does)
-    library-helper.ps1 -Once     process waiting jobs once and exit
-    library-helper.ps1 -Status   show settings and the jobs the helper can see
+    library-helper.ps1 -Setup             one-time: sign in with Plex and pick the server
+    library-helper.ps1                    run forever (what the scheduled task does)
+    library-helper.ps1 -Once              process waiting jobs once and exit
+    library-helper.ps1 -Status            show settings and the jobs the helper can see
+    library-helper.ps1 -EnableCompress [-WorkDir X:\_PLD_WORK]   let this PC run compression jobs
+    library-helper.ps1 -DisableCompress
 #>
-param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName)
+param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [switch]$EnableCompress, [switch]$DisableCompress, [string]$WorkDir)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -30,9 +42,11 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.2.0'
+$Version = '0.3.0'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
+$CompressPrefix = 'pldc:'
+$JobsDir = Join-Path $Root 'jobs'
 
 # ---------------------------------------------------------------- logging / config
 
@@ -140,15 +154,19 @@ function Do-Setup {
 # ---------------------------------------------------------------- labels
 
 function Parse-Label([string]$tag) {
-    if (-not $tag -or -not $tag.StartsWith($LabelPrefix, [StringComparison]::OrdinalIgnoreCase)) { return $null }  # Plex may capitalise it
-    $p = $tag.Substring($LabelPrefix.Length).Split(':', 5)
+    if (-not $tag) { return $null }
+    # Plex may capitalise it ("Pld:"), so compare without case
+    $prefix = @($CompressPrefix, $LabelPrefix) | Where-Object { $tag.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    if (-not $prefix) { return $null }
+    $p = $tag.Substring($prefix.Length).Split(':', 5)
     if ($p.Count -lt 4) { return $null }
-    [pscustomobject]@{ Tag = $tag; JobId = $p[0]; Action = $p[1]; MediaId = $p[2]; State = $p[3]; Info = $(if ($p.Count -gt 4) { $p[4] } else { '' }) }
+    [pscustomobject]@{ Tag = $tag; Prefix = $prefix; JobId = $p[0]; Action = $p[1]; MediaId = $p[2]; State = $p[3]; Info = $(if ($p.Count -gt 4) { $p[4] } else { '' }) }
 }
 function Job-Label($j, [string]$state, [string]$info = '') {
     $clean = ($info -replace '[,\r\n]', ' ').Trim()
     if ($clean.Length -gt 120) { $clean = $clean.Substring(0, 120) }
-    "$LabelPrefix$($j.JobId):$($j.Action):$($j.MediaId):$state" + $(if ($clean) { ":$clean" } else { '' })
+    $prefix = if ($j.Prefix) { $j.Prefix } else { $LabelPrefix }
+    "$prefix$($j.JobId):$($j.Action):$($j.MediaId):$state" + $(if ($clean) { ":$clean" } else { '' })
 }
 function Job-Time([string]$jobId) {
     try { [DateTimeOffset]::FromUnixTimeMilliseconds([Convert]::ToInt64(($jobId -split '-')[0], 36)).LocalDateTime } catch { Get-Date }
@@ -262,7 +280,7 @@ function Get-Jobs {
     $jobs = @()
     $sections = @((Pms GET '/library/sections').MediaContainer.Directory | Where-Object { $_.type -eq 'movie' })
     foreach ($s in $sections) {
-        $labels = @((Pms GET "/library/sections/$($s.key)/label").MediaContainer.Directory | Where-Object { $_.title -and $_.title.StartsWith($LabelPrefix, [StringComparison]::OrdinalIgnoreCase) })
+        $labels = @((Pms GET "/library/sections/$($s.key)/label").MediaContainer.Directory | Where-Object { $_.title -and (Parse-Label $_.title) })
         foreach ($l in $labels) {
             $j = Parse-Label $l.title; if (-not $j) { continue }
             $items = @((Pms GET "/library/sections/$($s.key)/all" @{ type = 1; label = $l.key }).MediaContainer.Metadata)
@@ -277,6 +295,10 @@ function Process-Jobs {
     $work = Get-Jobs
     foreach ($w in $work) {
         $j = $w.Job
+        if ($j.Prefix -eq $CompressPrefix) {
+            try { Process-CompressJob $w $shares } catch { Log "Compression job $($j.JobId) on '$($w.Item.title)': $($_.Exception.Message)" 'ERROR' }
+            continue
+        }
         $age = (Get-Date) - (Job-Time $j.JobId)
         if ($j.State -in 'done', 'fail' -and $age.TotalHours -gt 24) {
             Swap-Label $w.Section $w.Item.ratingKey $j.Tag $null; Log "Cleared finished job label $($j.JobId)"; continue
@@ -331,6 +353,188 @@ function Process-Jobs {
     }
 }
 
+# ---------------------------------------------------------------- compression
+
+function Save-Config {
+    $out = [ordered]@{}
+    foreach ($p in $script:Cfg.PSObject.Properties) { if ($p.Name -ne 'Token') { $out[$p.Name] = $p.Value } }
+    $out | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $ConfigPath -Encoding UTF8
+}
+
+function Compress-On { [bool]($script:Cfg.compress -and $script:Cfg.compress.enabled) }
+
+function Find-Tools {
+    $first = { param([string[]]$c) foreach ($x in $c) { if ($x -and (Test-Path -LiteralPath $x)) { return (Resolve-Path -LiteralPath $x).Path } }; $null }
+    $cmd = { param($n) $g = Get-Command $n -ErrorAction SilentlyContinue | Select-Object -First 1; if ($g) { $g.Source } }
+    $repoTools = Join-Path (Split-Path $Root -Parent) 'tools'
+    [ordered]@{
+        ffmpeg   = & $first @((& $cmd 'ffmpeg'))
+        ffprobe  = & $first @((& $cmd 'ffprobe'))
+        mkvmerge = & $first @((& $cmd 'mkvmerge'), "$env:ProgramFiles\MKVToolNix\mkvmerge.exe")
+        dovi     = & $first @((Join-Path $Root 'tools\dovi_tool.exe'), (Join-Path $repoTools 'dovi_tool.exe'), (& $cmd 'dovi_tool'))
+    }
+}
+
+function Enable-Compress {
+    $tools = Find-Tools
+    $missing = @($tools.Keys | Where-Object { -not $tools[$_] })
+    if ($missing) { throw "Missing: $($missing -join ', '). Install ffmpeg (winget install Gyan.FFmpeg) and MKVToolNix, and put dovi_tool.exe in the tools folder." }
+    $enc = & $tools.ffmpeg -hide_banner -encoders 2>$null | Out-String
+    if ($enc -notmatch 'hevc_amf') { throw "This ffmpeg can't use the AMD graphics encoder (hevc_amf)." }
+    if (-not $WorkDir) {
+        # the local drive with the most free space
+        $d = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Sort-Object FreeSpace -Descending | Select-Object -First 1
+        $WorkDir = "$($d.DeviceID)\_PLD_WORK"
+    }
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+    $prev = $script:Cfg.compress
+    $script:Cfg | Add-Member -NotePropertyName compress -Force -NotePropertyValue ([ordered]@{
+        enabled = $true; workDir = $WorkDir; tools = $tools
+        nightWindow = $(if ($prev -and $prev.nightWindow) { $prev.nightWindow } else { '23:00-07:00' })
+    })
+    Save-Config
+    Log "Compression turned on. Work folder $WorkDir. Tools: $(($tools.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
+}
+
+# p=4kh;a=keep;r=plex+game  ->  preset, audio and pause rules
+function Parse-CompressOptions([string]$info) {
+    $o = @{}
+    foreach ($kv in ($info -split ';')) { if ($kv -match '^\s*(\w+)=(.*)$') { $o[$Matches[1].ToLower()] = $Matches[2].Trim() } }
+    $r = @(([string]$o['r']).ToLower() -split '\+' | Where-Object { $_ })
+    [ordered]@{
+        preset = [string]$o['p']
+        audio  = $(if ($o['a'] -eq 'small') { 'small' } else { 'keep' })
+        rules  = [ordered]@{ plex = $r -contains 'plex'; game = $r -contains 'game'; idle = $r -contains 'idle'; night = $r -contains 'night' }
+    }
+}
+
+function Read-Json([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    for ($i = 0; $i -lt 3; $i++) { try { return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 200 } }
+    $null
+}
+function Write-Json([string]$path, $obj) { $obj | ConvertTo-Json -Depth 6 | Out-File -LiteralPath $path -Encoding UTF8 }
+
+function Worker-Alive($workerPid) {
+    if (-not $workerPid) { return $false }
+    $p = Get-Process -Id ([int]$workerPid) -ErrorAction SilentlyContinue
+    [bool]($p -and $p.ProcessName -match '^powershell')
+}
+
+# Jobs this PC is running right now, optionally only one mode ('compress' / 'estimate')
+function Running-Workers([string]$mode) {
+    if (-not (Test-Path $JobsDir)) { return @() }
+    @(Get-ChildItem -LiteralPath $JobsDir -Filter '*.json' | Where-Object { $_.Name -notlike '*.status.json' } | ForEach-Object {
+        $jf = Read-Json $_.FullName
+        if ($jf -and -not $jf.finished -and (-not $mode -or $jf.mode -eq $mode) -and (Worker-Alive $jf.workerPid)) { $jf }
+    })
+}
+
+function Fmt-Info([hashtable]$h) { ($h.GetEnumerator() | Where-Object { $null -ne $_.Value -and "$($_.Value)" -ne '' } | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ';' }
+
+function Finish-CompressJob($jf, [string]$jobFile) {
+    $jf | Add-Member -NotePropertyName finished -NotePropertyValue $true -Force
+    Write-Json $jobFile $jf
+    Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($jobFile, $null).TrimEnd('.') + '.cancel') -ErrorAction SilentlyContinue
+}
+
+function Process-CompressJob($w, [hashtable]$shares) {
+    $j = $w.Job
+    $age = (Get-Date) - (Job-Time $j.JobId)
+    if ($j.State -in 'done', 'fail' -and $age.TotalHours -gt 24) {
+        # Only the PC that ran it (or any PC if nobody claims it) clears it
+        if ((Compress-On) -or -not (Test-Path (Join-Path $JobsDir "$($j.JobId).json"))) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag $null; Log "Cleared finished compression label $($j.JobId)" }
+        return
+    }
+    if (-not (Compress-On)) { return }
+    if (-not (Test-Path $JobsDir)) { New-Item -ItemType Directory -Force $JobsDir | Out-Null }
+    $jobFile = Join-Path $JobsDir "$($j.JobId).json"
+    $statusFile = Join-Path $JobsDir "$($j.JobId).status.json"
+    $mode = if ($j.Action -eq 'ce') { 'estimate' } elseif ($j.Action -eq 'c') { 'compress' } else { $null }
+
+    if ($j.State -eq 'queued') {
+        if (-not $mode) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' "Unknown action '$($j.Action)'"); return }
+        if (Test-Path -LiteralPath $jobFile) { return }                 # already claimed; label update pending
+        if (@(Running-Workers $mode).Count) { return }                 # one compress and one estimate at a time
+        $media = @($w.Item.Media) | Where-Object { [string]$_.id -eq $j.MediaId } | Select-Object -First 1
+        if (-not $media) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Plex no longer lists this copy'); return }
+        $part = @($media.Part)[0]
+        if (@($media.Part).Count -gt 1) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Movies split into several files can''t be compressed yet'); return }
+        # This PC's own drive, or a network share it can read
+        $src = To-Local $part.file $shares
+        if (-not $src -and $part.file -match '^\\\\' -and (Test-Path -LiteralPath $part.file -PathType Leaf)) { $src = $part.file }
+        if (-not $src) { return }
+        $opt = Parse-CompressOptions $j.Info
+        $jf = [ordered]@{
+            jobId = $j.JobId; mode = $mode; action = $j.Action; mediaId = $j.MediaId; preset = $opt.preset; audio = $opt.audio; rules = $opt.rules
+            source = $src; sourcePlex = $part.file; section = $w.Section; ratingKey = [string]$w.Item.ratingKey
+            title = $w.Item.title; year = $w.Item.year
+            workDir = $script:Cfg.compress.workDir; tools = $script:Cfg.compress.tools; nightWindow = $script:Cfg.compress.nightWindow
+            plexUrl = $script:Cfg.serverUrl; tokenProtected = $script:Cfg.tokenProtected
+            created = (Get-Date).ToString('o'); workerPid = $null; lastInfo = ''; lastUpdate = $null
+        }
+        Write-Json $jobFile $jf
+        $runTag = Job-Label $j 'run' '0'
+        Swap-Label $w.Section $w.Item.ratingKey $j.Tag $runTag
+        $worker = Join-Path $Root 'compress.ps1'
+        $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$worker`" -JobFile `"$jobFile`""
+        $jf.workerPid = $p.Id
+        Write-Json $jobFile $jf
+        Log "Job $($j.JobId): $mode '$($w.Item.title)' preset $($opt.preset), audio $($opt.audio), pause rules $(($opt.rules.GetEnumerator() | Where-Object Value | ForEach-Object Key) -join '+'), from $src (worker $($p.Id))"
+        return
+    }
+
+    $jf = Read-Json $jobFile
+    if (-not $jf) { return }                                            # another PC's job
+    if ($jf.finished) { return }
+    $st = Read-Json $statusFile
+    $alive = Worker-Alive $jf.workerPid
+
+    if ($j.State -eq 'stop') {
+        if ($alive -and (-not $st -or $st.state -eq 'run')) { New-Item -ItemType File -Force ([IO.Path]::ChangeExtension($jobFile, 'cancel')) | Out-Null; return }
+        Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Stopped from the dashboard')
+        Finish-CompressJob $jf $jobFile
+        Log "Job $($j.JobId) stopped from the dashboard"
+        return
+    }
+    if ($j.State -ne 'run') { return }
+
+    if ($st -and $st.state -eq 'done') {
+        $r = $st.result
+        if ($mode -eq 'estimate') {
+            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes }
+        } else {
+            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }) }
+        }
+        Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'done' $info)
+        if ($mode -eq 'compress') {
+            Refresh-Plex $w.Section ([IO.Path]::GetDirectoryName($jf.sourcePlex))
+            Log ("Job {0} done: '{1}' {2:N1} GB -> {3:N1} GB at {4}" -f $j.JobId, $jf.title, ($r.srcBytes / 1GB), ($r.bytes / 1GB), $r.dest)
+        } else { Log "Job $($j.JobId) estimate done: $info" }
+        Finish-CompressJob $jf $jobFile
+        return
+    }
+    if (($st -and $st.state -eq 'fail') -or -not $alive) {
+        $msg = if ($st -and $st.state -eq 'fail') { $st.error } else { 'The compression worker stopped unexpectedly (PC restarted?). See the helper''s jobs folder log.' }
+        Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' $msg)
+        Log "Job $($j.JobId) failed: $msg" 'ERROR'
+        Finish-CompressJob $jf $jobFile
+        return
+    }
+    # Still running: report progress to Plex at most once a minute, or at once when it pauses/resumes
+    if ($st) {
+        $what = if ($st.paused) { "paused: $($st.paused)" } else { $st.phase }
+        $info = '{0};{1};{2}' -f [int]$st.percent, $(if ($st.secsLeft) { [long]$st.secsLeft } else { '' }), $what
+        $pausedChanged = ($jf.lastInfo -split ';', 3)[2] -ne $what
+        $due = -not $jf.lastUpdate -or ((Get-Date) - [datetime]$jf.lastUpdate).TotalSeconds -ge 60
+        if ($info -ne $jf.lastInfo -and ($due -or $pausedChanged)) {
+            Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'run' $info)
+            $jf.lastInfo = $info; $jf.lastUpdate = (Get-Date).ToString('o')
+            Write-Json $jobFile $jf
+        }
+    }
+}
+
 # ---------------------------------------------------------------- main
 
 if ($Setup) { Do-Setup; exit 0 }
@@ -338,9 +542,19 @@ $script:Cfg = Load-Config
 $script:LocalServer = $false
 try { $script:LocalServer = [bool](Get-Process 'Plex Media Server' -ErrorAction SilentlyContinue) } catch { }
 
+if ($EnableCompress) { Enable-Compress; "Compression is on for $env:COMPUTERNAME. Work folder: $($Cfg.compress.workDir)"; exit 0 }
+if ($DisableCompress) {
+    if ($Cfg.compress) { $Cfg.compress.enabled = $false; Save-Config }
+    Log 'Compression turned off.'; 'Compression is off. Running encodes finish; queued ones wait.'; exit 0
+}
+
 if ($Status) {
     "Plex Library Helper $Version on $env:COMPUTERNAME -> server '$($Cfg.serverName)' at $($Cfg.serverUrl)"
     "Shares handled:"; (Share-Map).GetEnumerator() | ForEach-Object { "  $($_.Key) -> $($_.Value)" }
+    if (Compress-On) {
+        "Compression: on. Work folder $($Cfg.compress.workDir), overnight window $($Cfg.compress.nightWindow)"
+        Running-Workers | ForEach-Object { "  running: $($_.mode) '$($_.title)' ($($_.preset)), worker $($_.workerPid)" }
+    } else { "Compression: off (turn on with -EnableCompress on the PC with the graphics card)" }
     "Jobs visible in Plex:"; Get-Jobs | ForEach-Object { "  $($_.Job.Tag)  on '$($_.Item.title)'" }
     exit 0
 }

@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $agent = Join-Path $PSScriptRoot 'library-helper.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($agent, [ref]$null, [ref]$null)
 foreach ($f in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) { . ([scriptblock]::Create($f.Extent.Text)) }
-$QuarantineDir = '_TO_DELETE'; $LabelPrefix = 'pld:'; $LogDir = Join-Path $env:TEMP 'pld-test-logs'
+$QuarantineDir = '_TO_DELETE'; $LabelPrefix = 'pld:'; $CompressPrefix = 'pldc:'; $LogDir = Join-Path $env:TEMP 'pld-test-logs'
 function Log($m, $l) { }
 
 $root = Join-Path $env:TEMP ("pld-test-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -57,6 +57,35 @@ try {
     Check 'label with info' ((Job-Label $j 'fail' 'Size on disk: a,b') -eq 'pld:abc-12:q:98765:fail:Size on disk: a b')
     $fp = Parse-Label 'pld:abc-12:q:98765:fail:Size on disk: 5 bytes'
     Check 'info keeps colons' ($fp.Info -eq 'Size on disk: 5 bytes')
+
+    # 9. Compression labels: own prefix (older helpers ignore it), options, progress
+    $c = Parse-Label 'Pldc:k2x-9ab:c:555:queued:p=4kh;a=small;r=plex+game'
+    Check 'compress label parsed (capitalised by Plex)' ($c.Prefix -eq 'pldc:' -and $c.Action -eq 'c' -and $c.MediaId -eq '555' -and $c.State -eq 'queued')
+    Check 'compress label keeps its prefix' ((Job-Label $c 'run' '37;3300;Encoding') -eq 'pldc:k2x-9ab:c:555:run:37;3300;Encoding')
+    Check 'old helpers would ignore compress labels' (-not 'pldc:x:c:1:queued'.StartsWith('pld:', [StringComparison]::OrdinalIgnoreCase))
+    $o = Parse-CompressOptions $c.Info
+    Check 'options: preset/audio/rules' ($o.preset -eq '4kh' -and $o.audio -eq 'small' -and $o.rules.plex -and $o.rules.game -and -not $o.rules.idle -and -not $o.rules.night)
+    Check 'options: audio defaults to keep' ((Parse-CompressOptions 'p=1080n').audio -eq 'keep')
+    Check 'info formatting has no commas' ((Fmt-Info @{ p = '4kh'; b = 123; q = 94.6 }) -eq 'b=123;p=4kh;q=94.6')
+
+    # 10. Compression worker rules (compress.ps1)
+    . (Join-Path $PSScriptRoot 'compress.ps1')
+    $hdr4k = [pscustomobject]@{ Width = 3840; Height = 2160; Hdr = $true; DvProfile = 7; BitDepth = 10; Primaries = 'bt2020'; Transfer = 'smpte2084'; Matrix = 'bt2020nc' }
+    $scope = [pscustomobject]@{ Width = 3840; Height = 1600; Hdr = $true; DvProfile = 0; BitDepth = 10; Primaries = 'bt2020'; Transfer = 'smpte2084'; Matrix = 'bt2020nc' }
+    $sdr1080 = [pscustomobject]@{ Width = 1920; Height = 1080; Hdr = $false; DvProfile = 0; BitDepth = 8; Primaries = 'bt709'; Transfer = 'bt709'; Matrix = 'bt709' }
+    Check '4K preset refused on a 1080p file' ([bool](Preset-Problem $Presets['4kh'] $sdr1080))
+    Check '4K preset fine on a scope 4K file' (-not (Preset-Problem $Presets['4kn'] $scope))
+    Check 'Dolby Vision profile 5 refused' ([bool](Preset-Problem $Presets['4kh'] ([pscustomobject]@{ Width = 3840; Height = 2160; DvProfile = 5 })))
+    $gpu4k = (Encode-Args $Presets['4kh'] $hdr4k 'in.mkv' 'out.hevc' $null) -join ' '
+    Check '4K GPU: frames stay on the GPU, raw HEVC out, HDR tags kept' ($gpu4k -match 'hwaccel_output_format d3d11' -and $gpu4k -match 'hevc_mp4toannexb' -and $gpu4k -match 'color_trc smpte2084' -and $gpu4k -notmatch ' -vf ')
+    $cpu4k = (Encode-Args $Presets['4kx'] $hdr4k 'in.mkv' 'out.mkv' $null) -join ' '
+    Check '4K Extreme: x265 with Dolby Vision forced on and a VBV cap' ($cpu4k -match 'libx265' -and $cpu4k -match '-dolbyvision 1' -and $cpu4k -match 'vbv-maxrate=40000')
+    $gpu1080 = (Encode-Args $Presets['1080n'] $scope 'in.mkv' 'out.hevc' $null) -join ' '
+    Check '1080p from HDR: tone-mapped, fitted to 1920 wide, HDR tags stripped, SDR tags set' ($gpu1080 -match 'tonemap' -and $gpu1080 -match 'w=1920:h=-2' -and $gpu1080 -match 'type=MASTERING_DISPLAY_METADATA' -and $gpu1080 -match 'color_trc bt709' -and $gpu1080 -notmatch 'hwaccel_output_format')
+    $sdrKeep = (Encode-Args $Presets['1080h'] $sdr1080 'in.mkv' 'out.hevc' $null) -join ' '
+    Check '1080p SDR source stays 8-bit main profile, no filters' ($sdrKeep -match 'profile:v main ' -and $sdrKeep -notmatch ' -vf ')
+    Check 'overnight window wraps midnight' ((In-Window '23:00-07:00' ([datetime]'2026-01-01 23:30')) -and (In-Window '23:00-07:00' ([datetime]'2026-01-02 06:59')) -and -not (In-Window '23:00-07:00' ([datetime]'2026-01-02 12:00')))
+    Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
