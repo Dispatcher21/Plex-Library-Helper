@@ -112,6 +112,12 @@ size, encode time and picture quality, in a few minutes) or **Start compressing*
   `<Title> (<Year>) - Compressed <quality>.mkv`, where Plex shows it as a second version. When you're
   happy with it, choose **Replace original…** on the compressed copy: that quarantines the original.
 
+**Knowing when it's done:** the first time you start a compression or estimate, the dashboard asks
+whether to notify you (you can also switch it on or off in **Jobs**). With it on, that device shows a
+system notification when a compression or estimate finishes or fails, as long as the dashboard is
+open in a tab there (on a phone, keep the tab open in Chrome). Finished jobs also pop up a message
+inside the page. Nothing extra is sent anywhere: the page notices when it re-reads the jobs from Plex.
+
 The work is done by the Library Helper on the PC with the graphics card: answer yes to
 "Use this PC for encoding / compression?" in its setup. It can compress files on other PCs' shared
 drives too.

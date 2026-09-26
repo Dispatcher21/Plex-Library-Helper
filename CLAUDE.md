@@ -17,6 +17,11 @@ background program on each PC that does file work the website can't.
     `score()` ranking ("highest quality"), locations from file paths
   - `jobs.js` — job queue carried in Plex labels (see below); `DemoJobs` for `?demo`
   - `compress.js` — compression presets, label option/progress formats, rough size/time guesses
+  - `notify.js` + `/sw.js` — "done" notifications for compress/estimate jobs (browser Notification API,
+    via the service worker because Android Chrome requires it; `sw.js` caches nothing) and in-page
+    toasts. Owner chose browser notifications only (no phone push service, no Windows toasts).
+    Finished jobs are spotted by comparing with the states remembered at the previous refresh
+    (`lastStates`), not `before`: demo jobs mutate in place.
   - `app.js` — UI, filters, detail view, confirm dialogs, jobs panel, Fix Match dialog
   - `cache.js` — IndexedDB snapshot per server (offline servers show "last seen")
   - `demo.js` — sample data; open `?demo` to test UI without Plex

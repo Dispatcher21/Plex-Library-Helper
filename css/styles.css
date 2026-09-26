@@ -173,6 +173,13 @@ h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color
 .cest { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--hdr-bg); color: var(--fg); font-size: 13px; }
 .cest.error { background: var(--dup-bg); }
 
+/* Finished-job messages */
+.notifyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+#toasts { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 50; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }
+.toast { background: var(--raised); border: 1px solid var(--line-strong); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow); cursor: pointer; font-size: 13px; }
+.toast b { display: block; margin-bottom: 2px; }
+.toast span { color: var(--fg2); }
+
 @media (max-width: 640px) {
   .top { flex-wrap: wrap; }
   #search { order: 3; flex-basis: 100%; max-width: none; }

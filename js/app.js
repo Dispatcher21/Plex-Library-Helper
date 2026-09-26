@@ -3,6 +3,7 @@ import * as cache from './cache.js';
 import { demoSnapshots } from './demo.js';
 import * as jobsApi from './jobs.js';
 import * as cz from './compress.js';
+import * as notify from './notify.js';
 import { normalizeMovies, normalizeEpisodes, buildMovies, buildShows, buildLocations, finishEntry, fmtSize, fmtBitrate, fmtAudio, GB } from './model.js';
 
 const $ = (id) => document.getElementById(id);
@@ -382,6 +383,7 @@ function movieDetail(e) {
 // ---------- Jobs ----------
 
 let jobTimer = null;
+let lastStates = new Map(); // job -> state at the previous refresh, to spot jobs that just finished
 async function refreshJobs() {
   const before = new Map(state.jobs.map((j) => [j.tag.split(':').slice(0, 2).join(':'), j.state]));
   if (state.demo) {
@@ -395,6 +397,14 @@ async function refreshJobs() {
   }
   // A finished quarantine or compression changes files, so rescan (estimates don't)
   const finished = state.jobs.some((j) => j.state === 'done' && j.action !== 'ce' && before.get(j.tag.split(':').slice(0, 2).join(':')) !== 'done' && before.size);
+  // Compressions / estimates that finished since the last look (only ones this page saw running or queued).
+  // Compared with the states remembered last time, not `before`: demo jobs change in place.
+  const jobKey = (j) => j.tag.split(':').slice(0, 2).join(':').toLowerCase();
+  for (const j of state.jobs) {
+    const was = lastStates.get(jobKey(j));
+    if (j.kind === 'compress' && was && was !== j.state && (j.state === 'done' || j.state === 'fail')) announce(j);
+  }
+  lastStates = new Map(state.jobs.map((j) => [jobKey(j), j.state]));
   renderJobsButton();
   if ($('jobs').open) renderJobs();
   if (openEntry) renderDetail();
@@ -402,6 +412,29 @@ async function refreshJobs() {
   clearTimeout(jobTimer);
   if (state.jobs.some((j) => ACTIVE.includes(j.state))) jobTimer = setTimeout(refreshJobs, state.demo ? 1000 : 10000);
   if (finished && !state.demo) setTimeout(sync, 8000); // let Plex notice the change, then rescan
+}
+
+function announce(j) {
+  const v = findVersion(j);
+  const name = `${j.title}${j.year ? ` (${j.year})` : ''}`;
+  const o = cz.decodeInfo(j.info);
+  const preset = cz.presetById(o.p)?.label || 'Compression';
+  if (j.state === 'fail') {
+    if (/stopped from the dashboard/i.test(j.info)) return; // you did that yourself
+    notify.show(`${j.action === 'ce' ? 'Estimate' : 'Compression'} failed: ${name}`, j.info || 'Unknown error', j.id);
+  } else if (j.action === 'ce') {
+    notify.show(`Estimate ready: ${name}`, `${preset}: ${cz.estimateText(j.info, v)}`, j.id);
+  } else {
+    notify.show(`Compressed: ${name}`, `${preset}: ${fmtSize(Number(o.s) || v?.size || 0)} → ${fmtSize(Number(o.b))}. The new copy is next to the original in Plex.`, j.id);
+  }
+}
+
+function notifyControl() {
+  if (!notify.supported()) return '<span>Notifications need the https site (or localhost).</span>';
+  if (notify.permission() === 'denied') return '<span>Notifications are blocked for this site in your browser settings; finished jobs still show a message here.</span>';
+  return notify.enabled()
+    ? '<span>You\'ll get a notification when a compression or estimate finishes (while this page is open on this device).</span> <button class="btn small ghost" data-notify="off">Turn off</button>'
+    : '<span>Get a notification on this device when a compression or estimate finishes?</span> <button class="btn small" data-notify="on">Notify me</button>';
 }
 
 function renderJobsButton() {
@@ -436,7 +469,8 @@ function findVersion(j) {
 function renderJobs() {
   const list = [...state.jobs].sort((a, b) => b.created - a.created);
   $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines and compressions requested from this dashboard. Finished jobs clear themselves after a day.</div>
-    <div class="sub fine">The Library Helper does these jobs on your PCs: ${HELPER_LINK} (the same download for every PC; its setup asks whether that PC should do compression).</div></div>
+    <div class="sub fine">The Library Helper does these jobs on your PCs: ${HELPER_LINK} (the same download for every PC; its setup asks whether that PC should do compression).</div>
+    <div class="sub fine notifyrow">${notifyControl()}</div></div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
     <div class="db">${list.length ? list.map((j, i) => {
       const d = jobDescription(j);
@@ -638,6 +672,9 @@ function renderCompress() {
 async function queueCompression(action) {
   const c = cctx; if (!c || c.busy) return;
   const p = cz.presetById(c.preset); if (!p) return;
+  // First compression from this device: ask (once) whether to be notified when it's done. Has to happen
+  // straight from the click, before anything is awaited, or browsers won't show the question.
+  if (notify.permission() === 'default' && !notify.wanted()) notify.turnOn();
   try { localStorage.setItem(CPREFS, JSON.stringify({ preset: c.preset, audio: c.audio, rules: [...c.rules] })); } catch { /* ignore */ }
   c.busy = true; c.error = ''; renderCompress();
   try {
@@ -822,6 +859,12 @@ function bind() {
   };
   $('jobs').onclick = async (ev) => {
     if (ev.target === $('jobs') || ev.target.closest('[data-close]')) { $('jobs').close(); return; }
+    const nb = ev.target.closest('[data-notify]');
+    if (nb) {
+      if (nb.dataset.notify === 'on') await notify.turnOn(); else notify.turnOff();
+      renderJobs();
+      return;
+    }
     const b = ev.target.closest('[data-cancel],[data-clear],[data-stop]'); if (!b) return;
     const j = jobFromRow(+(b.dataset.cancel ?? b.dataset.clear ?? b.dataset.stop)); if (!j) return;
     if (b.dataset.stop !== undefined && !confirm(`Stop compressing ${j.title}? The work done so far is thrown away; the original is untouched.`)) return;
