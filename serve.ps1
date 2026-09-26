@@ -14,13 +14,16 @@ try {
         if (-not $rel) { $rel = 'index.html' }
         $path = [IO.Path]::GetFullPath((Join-Path $root $rel))
         $res = $ctx.Response
-        if ($path.StartsWith($root) -and (Test-Path -LiteralPath $path -PathType Leaf)) {
-            $bytes = [IO.File]::ReadAllBytes($path)
-            $res.ContentType = $types[[IO.Path]::GetExtension($path).ToLower()]
-            if (-not $res.ContentType) { $res.ContentType = 'application/octet-stream' }
-            $res.Headers['Cache-Control'] = 'no-cache'
-            $res.OutputStream.Write($bytes, 0, $bytes.Length)
-        } else { $res.StatusCode = 404 }
-        $res.Close()
+        try {
+            if ($path.StartsWith($root) -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $bytes = [IO.File]::ReadAllBytes($path)
+                $res.ContentType = $types[[IO.Path]::GetExtension($path).ToLower()]
+                if (-not $res.ContentType) { $res.ContentType = 'application/octet-stream' }
+                $res.Headers['Cache-Control'] = 'no-cache'
+                $res.ContentLength64 = $bytes.Length
+                if ($ctx.Request.HttpMethod -ne 'HEAD') { $res.OutputStream.Write($bytes, 0, $bytes.Length) }
+            } else { $res.StatusCode = 404 }
+        } catch { Write-Host "Request for /$rel failed: $($_.Exception.Message)" }
+        try { $res.Close() } catch { }
     }
 } finally { $listener.Stop() }

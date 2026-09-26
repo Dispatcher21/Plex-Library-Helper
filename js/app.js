@@ -2,6 +2,7 @@ import * as plex from './plex.js';
 import * as cache from './cache.js';
 import { demoSnapshots } from './demo.js';
 import * as jobsApi from './jobs.js';
+import * as cz from './compress.js';
 import { normalizeMovies, normalizeEpisodes, buildMovies, buildShows, buildLocations, finishEntry, fmtSize, fmtBitrate, fmtAudio, GB } from './model.js';
 
 const $ = (id) => document.getElementById(id);
@@ -263,21 +264,74 @@ function render() {
 
 // ---------- Detail ----------
 
-function jobFor(v) {
-  return state.jobs.filter((j) => j.serverId === v.serverId && String(j.mediaId) === String(v.mediaId)).sort((a, b) => b.created - a.created)[0];
+// Latest quarantine job for a copy (kind 'quarantine'), or latest compression job with a given action ('c' / 'ce')
+function jobFor(v, action) {
+  return state.jobs.filter((j) => j.serverId === v.serverId && String(j.mediaId) === String(v.mediaId)
+    && (action ? j.kind === 'compress' && j.action === action : j.kind === 'quarantine')).sort((a, b) => b.created - a.created)[0];
 }
+const ACTIVE = ['queued', 'run', 'stop'];
 
-function versionActions(v, i) {
-  if (v.missing) return '<div class="actions"><span class="pill fail">File missing</span><span class="fine">Plex still lists this copy, but the file is gone. It disappears after Plex\'s Empty Trash.</span></div>';
-  if (!v.checked) return '<div class="actions"><button class="btn small danger" disabled>Checking the file…</button></div>';
+function quarantineAction(v, i) {
   const j = jobFor(v);
   if (j && j.state !== 'fail') {
     const label = { queued: 'Quarantine queued', run: 'Quarantining…', done: 'Quarantined' }[j.state] || j.state;
     const waiting = j.state === 'queued' && Date.now() - j.created > 90000 ? `<span class="fine">Waiting for the Library Helper on ${esc(v.machine)}. Is it running?</span>` : '';
-    return `<div class="actions"><span class="pill ${j.state}">${label}</span>${waiting}</div>`;
+    return `<span class="pill ${j.state}">${label}</span>${waiting}`;
   }
   const failed = j ? `<span class="pill fail" title="${esc(j.info)}">Last try failed: ${esc(j.info || 'unknown error')}</span>` : '';
-  return `<div class="actions"><button class="btn small danger" data-q="${i}">Quarantine this copy</button>${failed}</div>`;
+  return `<button class="btn small danger" data-q="${i}">Quarantine this copy</button>${failed}`;
+}
+
+function compressAction(v, i, e) {
+  if (jobFor(v)?.state === 'done') return '';
+  if (v.compressed) {
+    const originals = e.versions.filter((o) => o !== v && !o.compressed && !o.missing);
+    return originals.length ? `<button class="btn small" data-replace="${i}" title="Quarantine the original${originals.length > 1 ? 's' : ''} and keep this compressed copy">Replace original…</button>` : '';
+  }
+  if (!cz.PRESETS.some((p) => cz.presetFits(p, v)) || ACTIVE.includes(jobFor(v, 'c')?.state)) return '';
+  return `<button class="btn small" data-compress="${i}">Compress…</button>`;
+}
+
+// Progress / result of this copy's latest compression and estimate
+function compressStatus(v) {
+  const out = [];
+  const c = jobFor(v, 'c');
+  if (c && ACTIVE.includes(c.state)) out.push(progressHtml(c, v));
+  else if (c?.state === 'done') {
+    const o = cz.decodeInfo(c.info);
+    out.push(`<div class="cstat"><span class="pill done">Compressed</span> ${esc(cz.presetById(o.p)?.label || '')}: ${fmtSize(Number(o.s) || v.size)} → <b>${fmtSize(Number(o.b))}</b>. The new copy appears here once Plex has scanned it; then choose <b>Replace original…</b> on it, or keep both.</div>`);
+  } else if (c?.state === 'fail') out.push(`<div class="cstat"><span class="pill fail">Compression failed</span> ${esc(c.info)}</div>`);
+  const est = jobFor(v, 'ce');
+  if (est && (!c || est.created > c.created)) {
+    if (ACTIVE.includes(est.state)) out.push(progressHtml(est, v));
+    else if (est.state === 'done') {
+      const o = cz.decodeInfo(est.info);
+      out.push(`<div class="cstat"><span class="pill">Estimate</span> ${esc(cz.presetById(o.p)?.label || '')}: ${esc(cz.estimateText(est.info, v))}</div>`);
+    } else if (est.state === 'fail') out.push(`<div class="cstat"><span class="pill fail">Estimate failed</span> ${esc(est.info)}</div>`);
+  }
+  return out.join('');
+}
+
+function progressHtml(j, v) {
+  const est = j.action === 'ce';
+  const preset = cz.presetById(cz.jobPreset(j))?.label || '';
+  const verb = est ? 'Estimating' : 'Compressing';
+  if (j.state === 'queued') {
+    const late = Date.now() - j.created > 90000 ? ' Waiting for the Library Helper on the PC with the graphics card. Is it running, with compression turned on? It also waits while another encode is running.' : '';
+    return `<div class="cstat"><span class="pill queued">${verb} queued</span> ${esc(preset)}${esc(late)}</div>`;
+  }
+  if (j.state === 'stop') return `<div class="cstat"><span class="pill queued">Stopping…</span> ${esc(preset)}</div>`;
+  const r = cz.parseRun(j.info);
+  const left = r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : '';
+  return `<div class="cstat"><div class="crow"><span class="pill run">${verb}</span><span>${esc(preset)} · ${Math.round(r.percent)}%${left}</span></div>
+    <div class="bar"><i style="width:${Math.max(2, Math.min(100, r.percent))}%"></i></div>
+    <div class="fine">${r.paused ? `Paused: ${esc(r.paused)}. It carries on by itself.` : r.what === verb ? '' : esc(r.what)}</div></div>`;
+}
+
+function versionActions(v, i, e) {
+  if (v.missing) return '<div class="actions"><span class="pill fail">File missing</span><span class="fine">Plex still lists this copy, but the file is gone. It disappears after Plex\'s Empty Trash.</span></div>';
+  if (!v.checked) return '<div class="actions"><button class="btn small danger" disabled>Checking the file…</button></div>';
+  return `<div class="actions">${quarantineAction(v, i)}${compressAction(v, i, e)}</div>${compressStatus(v)}`;
 }
 
 function versionHtml(v, e, i, actions = false) {
@@ -298,15 +352,16 @@ function versionHtml(v, e, i, actions = false) {
     </div>
     ${v.files.map((f) => `<div class="path"><code>${esc(f)}</code><button class="btn small" data-copy="${esc(f)}">Copy</button></div>`).join('')}
     ${v.exact ? '' : '<div class="note">HDR, Dolby Vision and Atmos above are read from the file name until exact details load.</div>'}
-    ${actions ? versionActions(v, i) : ''}
+    ${actions ? versionActions(v, i, e) : ''}
   </div>`;
 }
 
 function activeJob(v) { return ['queued', 'run', 'done'].includes(jobFor(v)?.state); }
 function keepBestTargets(e) {
-  // Only real, still-present copies below the best one, and never before every copy has been checked
+  // Only real, still-present copies below the best one, and never before every copy has been checked.
+  // Compressed copies are left out: you made those on purpose (use "Replace original" on them instead).
   if (!e.versions.every((v) => v.checked) || e.best.missing) return null;
-  return e.versions.slice(1).filter((v) => !v.missing && !activeJob(v));
+  return e.versions.slice(1).filter((v) => !v.missing && !v.compressed && !activeJob(v));
 }
 
 function movieDetail(e) {
@@ -337,25 +392,39 @@ async function refreshJobs() {
     }));
     state.jobs = all;
   }
-  const finished = state.jobs.some((j) => j.state === 'done' && before.get(j.tag.split(':').slice(0, 2).join(':')) !== 'done' && before.size);
+  // A finished quarantine or compression changes files, so rescan (estimates don't)
+  const finished = state.jobs.some((j) => j.state === 'done' && j.action !== 'ce' && before.get(j.tag.split(':').slice(0, 2).join(':')) !== 'done' && before.size);
   renderJobsButton();
   if ($('jobs').open) renderJobs();
   if (openEntry) renderDetail();
+  if ($('compress').open) renderCompress();
   clearTimeout(jobTimer);
-  if (state.jobs.some((j) => j.state === 'queued' || j.state === 'run')) jobTimer = setTimeout(refreshJobs, state.demo ? 1000 : 10000);
+  if (state.jobs.some((j) => ACTIVE.includes(j.state))) jobTimer = setTimeout(refreshJobs, state.demo ? 1000 : 10000);
   if (finished && !state.demo) setTimeout(sync, 8000); // let Plex notice the change, then rescan
 }
 
 function renderJobsButton() {
-  const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'run').length;
+  const active = state.jobs.filter((j) => ACTIVE.includes(j.state)).length;
   $('jobs-btn').innerHTML = `Jobs${active ? `<span class="count">${active}</span>` : ''}`;
 }
 
 function jobDescription(j) {
   const v = findVersion(j);
   const where = v ? `${v.res} · ${fmtSize(v.size)} · ${v.machine} · ${v.drive}` : `copy ${j.mediaId}`;
+  if (j.kind === 'compress') {
+    const preset = cz.presetById(cz.jobPreset(j))?.label || '';
+    const what = `${j.action === 'ce' ? 'Estimate' : 'Compress'}${preset ? ` (${preset})` : ''}`;
+    let info = '';
+    if (j.state === 'run') {
+      const r = cz.parseRun(j.info);
+      info = `${Math.round(r.percent)}%${r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : ''} · ${r.paused ? `paused: ${r.paused}` : r.what}`;
+    } else if (j.state === 'done' && j.action === 'ce') info = cz.estimateText(j.info, v);
+    else if (j.state === 'done') { const o = cz.decodeInfo(j.info); info = `${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}, the original is untouched`; }
+    else if (j.state === 'fail') info = j.info;
+    return { what, where, info, percent: j.state === 'run' ? cz.parseRun(j.info).percent : null };
+  }
   const info = j.state === 'done' ? `Freed ${fmtSize(Number(j.info) || 0)} (moved to _TO_DELETE)` : j.state === 'fail' ? j.info : '';
-  return { where, info };
+  return { what: 'Quarantine', where, info, percent: null };
 }
 
 function findVersion(j) {
@@ -365,14 +434,17 @@ function findVersion(j) {
 
 function renderJobs() {
   const list = [...state.jobs].sort((a, b) => b.created - a.created);
-  $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines requested from this dashboard. Finished jobs clear themselves after a day.</div></div>
+  $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines and compressions requested from this dashboard. Finished jobs clear themselves after a day.</div></div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
     <div class="db">${list.length ? list.map((j, i) => {
       const d = jobDescription(j);
-      const btn = j.state === 'queued' ? `<button class="btn small" data-cancel="${i}">Cancel</button>` : (j.state === 'done' || j.state === 'fail') ? `<button class="btn small ghost" data-clear="${i}">Clear</button>` : '';
-      return `<div class="jobrow"><span class="pill ${j.state}">${jobsApi.STATES[j.state] || esc(j.state)}</span>
-        <div><div class="t">Quarantine · ${esc(j.title)}${j.year ? ` (${j.year})` : ''}</div><div class="m">${esc(d.where)} · ${timeAgo(j.created)}${d.info ? ` · ${esc(d.info)}` : ''}</div></div>${btn}</div>`;
-    }).join('') : '<p class="empty">No jobs yet. Open a movie and choose Quarantine on a copy.</p>'}</div>`;
+      const btn = j.state === 'queued' ? `<button class="btn small" data-cancel="${i}">Cancel</button>`
+        : j.state === 'run' && j.kind === 'compress' ? `<button class="btn small danger" data-stop="${i}">Stop</button>`
+          : (j.state === 'done' || j.state === 'fail') ? `<button class="btn small ghost" data-clear="${i}">Clear</button>` : '';
+      return `<div class="jobrow"><span class="pill ${j.state === 'stop' ? 'queued' : j.state}">${jobsApi.STATES[j.state] || esc(j.state)}</span>
+        <div><div class="t">${esc(d.what)} · ${esc(j.title)}${j.year ? ` (${j.year})` : ''}</div><div class="m">${esc(d.where)} · ${timeAgo(j.created)}${d.info ? ` · ${esc(d.info)}` : ''}</div>
+        ${d.percent !== null ? `<div class="bar"><i style="width:${Math.max(2, Math.min(100, d.percent))}%"></i></div>` : ''}</div>${btn}</div>`;
+    }).join('') : '<p class="empty">No jobs yet. Open a movie and choose Quarantine or Compress on a copy.</p>'}</div>`;
   $('jobs-body').dataset.order = JSON.stringify(list.map((j) => j.tag));
 }
 
@@ -489,6 +561,96 @@ function openDetail(e) {
   openEntry = e; renderDetail();
   const d = $('detail'); if (!d.open) d.showModal();
   if (!state.demo) loadExact(e);
+}
+
+// ---------- Compress ----------
+
+let cctx = null;
+const CPREFS = 'pld.compress';
+
+function openCompress(e, v) {
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem(CPREFS) || '{}'); } catch { /* defaults */ }
+  const fits = cz.PRESETS.filter((p) => cz.presetFits(p, v));
+  // Start from this copy's last estimate if there is one, else the last choice, else 4K Normal / 1080p Normal
+  const est = jobFor(v, 'ce'); const eo = est ? cz.decodeInfo(est.state === 'run' ? '' : est.info) : {};
+  const want = eo.p || saved.preset;
+  const preset = fits.find((p) => p.id === want)?.id || fits.find((p) => p.id === '4kn')?.id || fits.find((p) => p.id === '1080n')?.id || fits[0]?.id;
+  cctx = { e, v, preset, audio: eo.a || saved.audio || 'keep', rules: new Set(saved.rules || cz.RULES.filter((r) => r.on).map((r) => r.id)), error: '', busy: false };
+  renderCompress();
+  $('compress').showModal();
+}
+
+function dvLine(p, v) {
+  if (v.dv) return p.dv ? 'Keeps Dolby Vision' : 'Dolby Vision and HDR become normal colour (SDR)';
+  if (v.hdr) return p.height === 1080 ? 'HDR becomes normal colour (SDR)' : 'Keeps HDR';
+  return '';
+}
+
+function renderCompress() {
+  const c = cctx; if (!c) return;
+  const { e, v } = c;
+  const p = cz.presetById(c.preset);
+  const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
+  // The latest estimate for exactly these settings
+  const ests = state.jobs.filter((j) => j.kind === 'compress' && j.action === 'ce' && j.serverId === v.serverId && String(j.mediaId) === String(v.mediaId)).sort((a, b) => b.created - a.created);
+  const est = ests.find((j) => { const o = j.state === 'run' ? { p: cz.jobPreset(j) } : cz.decodeInfo(j.info); return o.p === c.preset && (!o.a || o.a === c.audio || j.state === 'run'); });
+  const estRunning = est && ACTIVE.includes(est.state);
+  let estHtml = '';
+  if (est?.state === 'done') {
+    const o = cz.decodeInfo(est.info);
+    estHtml = `<div class="cest"><b>Estimate from 3 samples of this film:</b> ${esc(cz.estimateText(est.info, v))}${o.q ? `<div class="fine">Quality ${esc(o.q)}: ${esc(cz.qualityWords(o.q))}.</div>` : ''}</div>`;
+  } else if (estRunning) estHtml = progressHtml(est, v);
+  else if (est?.state === 'fail') estHtml = `<div class="cest error">Estimate failed: ${esc(est.info)}</div>`;
+
+  $('compress-body').innerHTML = `<div class="dh"><div><h2>Compress ${esc(e.title)}${e.year ? ` (${e.year})` : ''}</h2>
+      <div class="sub">This copy: ${esc(v.res)} · ${esc(v.src)} · ${fmtSize(v.size)}${v.dv ? ' · Dolby Vision' : v.hdr ? ' · HDR' : ''}${v.duration ? ` · ${cz.fmtDuration(v.duration / 1000)}` : ''}</div></div>
+      <div class="hbtns"><button class="btn ghost small" data-close>Close</button></div></div>
+    <div class="db">
+      <h3 class="ch">Quality</h3>
+      <div class="presets">${cz.PRESETS.map((q) => {
+        const fits = cz.presetFits(q, v); const g = cz.roughGuess(q, v, c.audio);
+        return `<label class="preset${fits ? '' : ' off'}${q.id === c.preset ? ' on' : ''}">
+          <input type="radio" name="preset" value="${q.id}" ${q.id === c.preset ? 'checked' : ''} ${fits ? '' : 'disabled'}>
+          <div><div class="t">${esc(q.label)} <span class="b">${esc(q.where)}</span></div>
+          <div class="m">${esc(q.note)}</div>
+          ${fits ? `<div class="m">${g.little ? '<b>Little to gain: this copy is already fairly compact.</b> ' : ''}Typically about ${fmtSize(g.bytes)} (${Math.round((g.bytes / v.size) * 100)}%)${g.secs ? ` · about ${cz.fmtDuration(g.secs)}` : ''}${dvLine(q, v) ? ` · ${esc(dvLine(q, v))}` : ''}</div>` : '<div class="m">Needs a bigger source than this copy.</div>'}</div></label>`;
+      }).join('')}</div>
+      <h3 class="ch">Audio</h3>
+      <div class="opts">
+        <label><input type="radio" name="audio" value="keep" ${c.audio === 'keep' ? 'checked' : ''}> Keep all original audio <span class="fine">(${esc(fmtAudio(v) || 'as is')}, every language and commentary)</span></label>
+        <label><input type="radio" name="audio" value="small" ${c.audio === 'small' ? 'checked' : ''}> Smaller: one main track <span class="fine">(uses the disc's Dolby Digital Plus track if it has one, which often keeps Atmos; otherwise 5.1 Dolby Digital Plus. Lossless TrueHD/DTS-HD is dropped.)</span></label>
+      </div>
+      <h3 class="ch">When</h3>
+      <div class="opts">${cz.RULES.map((r) => `<label><input type="checkbox" data-rule="${r.id}" ${c.rules.has(r.id) ? 'checked' : ''}> ${esc(r.label)}</label>`).join('')}</div>
+      ${estHtml}
+      <p class="note">The Library Helper on the PC with the graphics card does the work. The original is never changed: the compressed copy is added next to it, checked, and shows up in Plex as a second version. Replacing the original is a separate step afterwards. Grainy films shrink much less than the typical figures; <b>Estimate</b> encodes three short samples of this film (a few minutes) to tell you the real size, time and quality first.</p>
+      ${c.error ? `<p class="error">${esc(c.error)}</p>` : ''}
+      <div class="foot">
+        <button class="btn" data-cest ${estRunning || c.busy || !p ? 'disabled' : ''}>${estRunning ? 'Estimating…' : est?.state === 'done' ? 'Estimate again' : 'Estimate first'}</button>
+        <button class="btn primary" data-cgo ${c.busy || !p ? 'disabled' : ''}>Start compressing</button>
+      </div>
+    </div>`;
+  $('compress-body').dataset.opts = opts;
+}
+
+async function queueCompression(action) {
+  const c = cctx; if (!c || c.busy) return;
+  const p = cz.presetById(c.preset); if (!p) return;
+  try { localStorage.setItem(CPREFS, JSON.stringify({ preset: c.preset, audio: c.audio, rules: [...c.rules] })); } catch { /* ignore */ }
+  c.busy = true; c.error = ''; renderCompress();
+  try {
+    if (c.v.missing || !c.v.checked) throw new Error('the file is missing or hasn\'t been checked yet');
+    const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
+    if (state.demo) state.demoJobs.queueCompress(c.v, c.e, action, opts, cz.roughGuess(p, c.v, c.audio));
+    else {
+      const api = state.servers[c.v.serverId]?.api;
+      if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
+      await jobsApi.queueCompress(api, c.v, action, opts);
+    }
+    c.busy = false;
+    if (action === 'c') { $('compress').close(); cctx = null; }
+    await refreshJobs();
+  } catch (err) { c.busy = false; c.error = `Couldn't send: ${err.message}`; renderCompress(); }
 }
 
 // ---------- Fix match ----------
@@ -643,14 +805,30 @@ function bind() {
     cb.checked ? matchCtx.selected.add(cb.dataset.item) : matchCtx.selected.delete(cb.dataset.item);
   };
   $('match').onsubmit = (ev) => { ev.preventDefault(); searchMatches(); };
+  $('compress').onclick = (ev) => {
+    if (ev.target === $('compress') || ev.target.closest('[data-close]')) { $('compress').close(); cctx = null; return; }
+    if (ev.target.closest('[data-cest]')) queueCompression('ce');
+    if (ev.target.closest('[data-cgo]')) queueCompression('c');
+  };
+  $('compress').onchange = (ev) => {
+    if (!cctx) return;
+    const t = ev.target;
+    if (t.name === 'preset') cctx.preset = t.value;
+    else if (t.name === 'audio') cctx.audio = t.value;
+    else if (t.dataset.rule) t.checked ? cctx.rules.add(t.dataset.rule) : cctx.rules.delete(t.dataset.rule);
+    renderCompress();
+  };
   $('jobs').onclick = async (ev) => {
     if (ev.target === $('jobs') || ev.target.closest('[data-close]')) { $('jobs').close(); return; }
-    const b = ev.target.closest('[data-cancel],[data-clear]'); if (!b) return;
-    const j = jobFromRow(+(b.dataset.cancel ?? b.dataset.clear)); if (!j) return;
+    const b = ev.target.closest('[data-cancel],[data-clear],[data-stop]'); if (!b) return;
+    const j = jobFromRow(+(b.dataset.cancel ?? b.dataset.clear ?? b.dataset.stop)); if (!j) return;
+    if (b.dataset.stop !== undefined && !confirm(`Stop compressing ${j.title}? The work done so far is thrown away; the original is untouched.`)) return;
     b.disabled = true;
     try {
-      if (state.demo) state.demoJobs.remove(j);
-      else await jobsApi.removeJob(state.servers[j.serverId].api, j);
+      const api = state.servers[j.serverId]?.api;
+      if (b.dataset.stop !== undefined) { if (state.demo) state.demoJobs.stop(j); else await jobsApi.stopJob(api, j); }
+      else if (state.demo) state.demoJobs.remove(j);
+      else await jobsApi.removeJob(api, j);
     } catch (err) { b.disabled = false; b.textContent = 'Failed, retry'; console.error(err); return; }
     await refreshJobs();
   };
@@ -669,6 +847,15 @@ function bind() {
     if (ev.target.closest('[data-fixmatch]') && openEntry) { openMatch(openEntry); return; }
     const q = ev.target.closest('[data-q]');
     if (q && openEntry?.kind === 'movie') { confirmQuarantine(openEntry, [openEntry.versions[+q.dataset.q]]); return; }
+    const cb = ev.target.closest('[data-compress]');
+    if (cb && openEntry?.kind === 'movie') { openCompress(openEntry, openEntry.versions[+cb.dataset.compress]); return; }
+    const rp = ev.target.closest('[data-replace]');
+    if (rp && openEntry?.kind === 'movie') {
+      const keep = openEntry.versions[+rp.dataset.replace];
+      const originals = openEntry.versions.filter((o) => o !== keep && !o.compressed && !o.missing && !activeJob(o));
+      if (originals.length) confirmQuarantine(openEntry, originals);
+      return;
+    }
     if (ev.target.closest('[data-keepbest]') && openEntry?.kind === 'movie') {
       const rest = keepBestTargets(openEntry);
       if (rest?.length) confirmQuarantine(openEntry, rest);

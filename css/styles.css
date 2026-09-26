@@ -154,6 +154,25 @@ details.dupeps summary { cursor: pointer; font-weight: 600; }
 .mitems label { display: flex; gap: 8px; align-items: baseline; } .mitems code { color: var(--fg2); font-size: 12px; overflow-wrap: anywhere; }
 .dh .hbtns { margin-left: auto; display: flex; gap: 6px; align-self: flex-start; }
 
+/* Compress */
+.cstat { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--raised); font-size: 13px; }
+.cstat .crow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cstat .bar, .jobrow .bar { margin-top: 6px; }
+.cstat .fine { margin-top: 4px; }
+h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg3); margin: 16px 0 6px; }
+.presets { display: grid; gap: 6px; }
+.preset { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; }
+.preset.on { border-color: var(--accent); }
+.preset.off { opacity: .5; cursor: default; }
+.preset input { margin-top: 3px; }
+.preset .t { font-weight: 600; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.preset .m { color: var(--fg2); font-size: 12px; }
+.opts { display: grid; gap: 6px; font-size: 13px; }
+.opts label { display: flex; gap: 8px; align-items: baseline; }
+.opts .fine { display: inline; }
+.cest { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--hdr-bg); color: var(--fg); font-size: 13px; }
+.cest.error { background: var(--dup-bg); }
+
 @media (max-width: 640px) {
   .top { flex-wrap: wrap; }
   #search { order: 3; flex-basis: 100%; max-width: none; }

@@ -23,7 +23,7 @@
     Queued info carries the options: p=<preset>;a=<keep|small>;r=<plex+game+idle+night>.
     Only a helper set up with -EnableCompress takes these; it reads files on its own drives or over
     the network, and runs compress.ps1 as a separate process so quarantines keep working meanwhile.
-    States: queued -> run:<percent>;<seconds left>;<phase or pause reason> -> done / fail.
+    States: queued -> run:<percent>;<seconds left>;<phase or pause reason>;<preset> -> done / fail.
     The dashboard asks to stop a running one by changing its state to "stop".
 
   Usage
@@ -474,7 +474,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
             created = (Get-Date).ToString('o'); workerPid = $null; lastInfo = ''; lastUpdate = $null
         }
         Write-Json $jobFile $jf
-        $runTag = Job-Label $j 'run' '0'
+        $runTag = Job-Label $j 'run' "0;;Starting;$($opt.preset)"
         Swap-Label $w.Section $w.Item.ratingKey $j.Tag $runTag
         $worker = Join-Path $Root 'compress.ps1'
         $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$worker`" -JobFile `"$jobFile`""
@@ -524,8 +524,8 @@ function Process-CompressJob($w, [hashtable]$shares) {
     # Still running: report progress to Plex at most once a minute, or at once when it pauses/resumes
     if ($st) {
         $what = if ($st.paused) { "paused: $($st.paused)" } else { $st.phase }
-        $info = '{0};{1};{2}' -f [int]$st.percent, $(if ($st.secsLeft) { [long]$st.secsLeft } else { '' }), $what
-        $pausedChanged = ($jf.lastInfo -split ';', 3)[2] -ne $what
+        $info = '{0};{1};{2};{3}' -f [int]$st.percent, $(if ($st.secsLeft) { [long]$st.secsLeft } else { '' }), $what, $jf.preset
+        $pausedChanged = ([string]$jf.lastInfo -split ';')[2] -ne $what
         $due = -not $jf.lastUpdate -or ((Get-Date) - [datetime]$jf.lastUpdate).TotalSeconds -ge 60
         if ($info -ne $jf.lastInfo -and ($due -or $pausedChanged)) {
             Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'run' $info)

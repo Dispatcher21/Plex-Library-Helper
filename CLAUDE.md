@@ -16,12 +16,15 @@ background program on each PC that does file work the website can't.
   - `model.js` — merges copies across items/servers by TMDB/IMDb/TVDB id, quality detection,
     `score()` ranking ("highest quality"), locations from file paths
   - `jobs.js` — job queue carried in Plex labels (see below); `DemoJobs` for `?demo`
+  - `compress.js` — compression presets, label option/progress formats, rough size/time guesses
   - `app.js` — UI, filters, detail view, confirm dialogs, jobs panel, Fix Match dialog
   - `cache.js` — IndexedDB snapshot per server (offline servers show "last seen")
   - `demo.js` — sample data; open `?demo` to test UI without Plex
-- `helper/library-helper.ps1` — Windows PowerShell 5.1. `-Setup`, `-Status`, `-Once`, default loop.
+- `helper/compress.ps1` — compression worker, one process per job (see Compression below)
+- `helper/library-helper.ps1` — Windows PowerShell 5.1. `-Setup`, `-Status`, `-Once`, `-EnableCompress`, default loop.
   Double-click `.cmd` launchers for users. `test-helper.ps1` = offline tests (must stay passing).
 - `serve.ps1` / `Start Dashboard.cmd` — tiny local static server on http://localhost:5173/
+  (the desktop app's preview config is `plex-dashboard` in `Documents\Claude\.claude\launch.json`)
 
 ## Job mailbox (no backend)
 
@@ -62,26 +65,66 @@ and swap the label to `run` → `done:<bytes>` / `fail:<reason>`. Finished label
 - Push notifications at checkpoints and on any error when running long jobs.
 - Test in `?demo` and with `test-helper.ps1`; syntax-check PowerShell with the AST parser.
 
-## Next: compression (in progress)
+## Compression (version 0.3)
 
-Goal: a **Compress…** action on a movie with presets, run by the helper on the gaming PC.
+**Compress…** on a movie copy → dialog (preset, audio, pause rules, *Estimate first*) → label
+`pldc:<id>:c|ce:<mediaId>:queued:p=4kh;a=keep;r=plex+game`. Own prefix so helpers < 0.3 ignore it
+(they'd fail unknown `pld:` actions). Only a helper with `-EnableCompress` (the gaming PC) claims them;
+it reads the file from its own drive or over SMB and starts `helper/compress.ps1 -JobFile jobs\<id>.json`
+as a separate process. Worker ↔ helper talk through `jobs\<id>.status.json` (+ `.cancel`, `.log`).
+Running label info: `run:<pct>;<secsLeft>;<phase|paused: why>;<preset>`, updated ≤ once a minute.
+Dashboard "Stop" swaps the state to `stop`; helper drops a `.cancel` file.
 
-- Presets: 4K Extreme / High / Normal / Data Saver; 1080p High / Normal / Data Saver.
-  4K Extreme/High → CPU x265 (best quality/GB, slow, overnight); 4K Normal/Data Saver and 1080p →
-  GPU (AMD AMF HEVC on the RX 6750 XT; no AV1 encode). 1080p from HDR → tone-map to SDR.
-- Audio choice per job: keep original (keeps TrueHD Atmos) or smaller surround (loses Atmos).
-- Tool: HandBrakeCLI (install via winget **with the owner's approval**). First task: test encodes
-  on a real Dolby Vision rip, CPU and GPU, to confirm what survives (DV/HDR10+/HDR10, audio, subs)
-  and measure real speed/size before finalising presets.
-- Scheduling is chosen **per job** by the user: start now / overnight window / only when idle /
-  pause while gaming (full-screen app running) — combinable. Encodes run at low priority.
-- Safety: original untouched; output verified (duration, streams) before it's added next to the
-  original; "Replace original" is a separate, explicit step using the quarantine flow.
-- Progress via the label info field (`run:37%`), shown in the Jobs panel.
-- Needs a helper on the gaming PC first (not yet installed there; untested on a PC where Plex runs
-  locally — `To-Local` handles drive-letter paths when `Plex Media Server` is running).
+Pipeline (compress.ps1): probe → [GPU+DV: ffmpeg | dovi_tool -m 2 extract-rpu (P7/P8 → 8.1)] →
+encode (AMF: d3d11va decode, raw .hevc; x265: video-only .mkv) → dovi_tool inject-rpu → mkvmerge
+(original audio/subs/chapters) → verify (frames = encoder's count, video length vs source, DV present,
+track counts, test-decode start and end) → copy to `<Title> (<Year>) - Compressed <preset>.mkv` next to
+the original (or a new `<Title> (<Year>)\` folder when the original is loose in e.g. `E:\Movies`) →
+helper asks Plex to rescan. Original never touched; "Replace original…" on the compressed copy is the
+normal quarantine flow. Estimate = 3 samples (20/50/80%), VMAF against the same scaling/tone-mapping.
 
-## Repo layout TODO
+Test results that set the presets (Jurassic World Rebirth 4K DV P7 remux; Black Hawk Down for grain):
 
-The first GitHub upload put everything in a `plex-library-dashboard/` subfolder, so Pages serves
-at `.../Plex-Library-Helper/plex-library-dashboard/`. Move the files to the repo root.
+| Preset | Encoder | Clean film size / VMAF | Speed |
+|---|---|---|---|
+| 4K Extreme | x265 slow CRF 18 | 20% / 95.6 | ~1 fps (≈2 days/film) |
+| 4K High | AMF CQP 20 | 27% / 94.9 (96.9 on another scene) | ~30 fps (≈1.5 h) |
+| 4K Normal | AMF CQP 22 | ~20% / ~94 | ~30 fps |
+| 4K Data Saver | AMF CQP 26 | ~10% / ~89 | ~30 fps |
+| 1080p High/Normal/Saver | AMF CQP 20/22/24, HDR→SDR (zscale+hable) | 9% / – / 5% | ~24 fps (CPU tone-map) |
+
+Grainy film: AMF QP20 came out **bigger than the source** at VMAF 84; x265 medium 48% at 80. Hence
+"Estimate first". x265 *medium* was barely better than AMF per GB at 10× the time, so it's not a preset.
+
+Pause rules (worker, every 5 s; NtSuspendProcess on ffmpeg, resume after 30 s clear): `plex` (Plex
+`/status/sessions` size > 0, fallback: Plex Transcoder process), `game` (foreground window covers its
+monitor), `idle` (GetLastInputInfo < 10 min), `night` (config `compress.nightWindow`, default 23:00-07:00).
+Even at Idle priority a 16-thread x265 encode made a Plex transcode stutter; GPU encodes with GPU
+decode use ~2 s CPU per 20 s clip.
+
+The owner's LG C1 plays Dolby Vision (not HDR10+). DV 8.1 playback of a compressed MKV on the C1 via
+Plex was **not yet confirmed** (test clip `G:\PLEX\MOVIES\Compression Test DV (2025)\`; remove after).
+
+### Compression gotchas
+
+- AMF `-rc qvbr` ignores bitrate limits on this driver (output 2.7× the source). Use `-rc cqp`.
+- AMF `-usage high_quality` / `-preanalysis` fail to init on RDNA2.
+- AMF labels 10-bit output "Main" unless `-profile:v main10` is set.
+- x265 via ffmpeg: `-dolbyvision` "auto" silently drops DV; force `1`, which also needs VBV
+  (`vbv-maxrate/bufsize`), else "Dolby Vision requires VBV settings to enable HRD".
+- DV profile 5 (IPT, streaming) is refused: re-encoding/tone-mapping its base layer would be wrong colours.
+- MKV `NUMBER_OF_BYTES` / `DURATION` tags survive `-c copy` cuts (wrong for clips); `BPS` stays right.
+- Audio can outlast video; compare *video* length (last video packet), not the container duration.
+- Tone-mapped SDR output kept HDR mastering metadata until the `sidedata=mode=delete` filters were added.
+- VMAF needs timestamps: compare MKV samples, not raw .hevc (25 fps default).
+- PS 5.1: `Split-Path -LiteralPath x -Parent` is a parameter-set error; use `[IO.Path]::GetDirectoryName`.
+- PS: `R` is an alias (Invoke-History), so don't name helper functions `R`. `Start-Process` needs
+  `$p.Handle` touched before exit or `ExitCode` is empty.
+- Tools: ffmpeg (winget Gyan.FFmpeg), MKVToolNix, `tools\dovi_tool.exe` (official release from
+  github.com/quietvoid/dovi_tool; `tools/` is gitignored).
+
+### Next
+
+- Set up the helper on LENOVOLEGION (`-Setup`, then `-EnableCompress`) and run a real job through Plex.
+- Confirm DV playback on the C1; then remove the test clip.
+- Push the repo-root move + v0.3 once the owner says so (Pages URL changes to the repo root).

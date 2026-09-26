@@ -88,6 +88,35 @@ powershell -ExecutionPolicy Bypass -File install-helper.ps1           # start wi
 
 See `helper/README.md` for what it does, where its log is, and how to stop or remove it.
 
+## Compress (version 3)
+
+Open a movie and choose **Compress…** on a copy. Pick a quality, what to do with the audio, and when
+it may run; then **Estimate first** (encodes three short samples of that film and tells you the real
+size, encode time and picture quality, in a few minutes) or **Start compressing**.
+
+| Quality | Runs on | Typical result for a 4K remux | Time for a 2-hour film |
+|---|---|---|---|
+| 4K Extreme | Processor | ~20% of the size, indistinguishable | about 2 days (for favourites) |
+| 4K High | Graphics card | ~27%, looks the same on a TV | about 1.5 hours |
+| 4K Normal | Graphics card | ~20%, very close | about 1.5 hours |
+| 4K Data Saver | Graphics card | ~10%, some softness | about 1.5 hours |
+| 1080p High / Normal / Data Saver | Graphics card | 5–9%, HDR becomes normal colour | about 2 hours |
+
+- **Dolby Vision is kept** on every 4K preset (converted to profile 8.1, the kind TVs and Plex play
+  best). HDR10 is kept. HDR10+ is not.
+- **Audio:** keep everything, or one smaller main track (reuses the disc's Dolby Digital Plus track,
+  often Atmos, when there is one).
+- **When:** pause while someone is watching Plex, pause while a game or full-screen video runs,
+  only when the PC is idle, only overnight. Paused encodes carry on by themselves.
+- **Grainy films** (lots of film grain) shrink far less, sometimes not at all. That's why Estimate exists.
+- **Safety:** the original is never touched. The result is checked (length, every frame, audio and
+  subtitle tracks, Dolby Vision, a test playback) before it's copied next to the original as
+  `<Title> (<Year>) - Compressed <quality>.mkv`, where Plex shows it as a second version. When you're
+  happy with it, choose **Replace original…** on the compressed copy: that quarantines the original.
+
+The work is done by the Library Helper on the PC with the graphics card, which needs compression
+turned on once: see `helper/README.md`. It can compress files on other PCs' shared drives too.
+
 ## Limits
 
 - Quarantine works on movies. Shows and episodes are view-only for now.
@@ -112,6 +141,7 @@ own Plex account and only ever sees their own servers.
 | `js/app.js` | UI, filters, detail view |
 | `js/plex.js` | Plex sign-in, server discovery, API calls |
 | `js/model.js` | Merging titles, quality detection, duplicate ranking |
+| `js/jobs.js`, `js/compress.js` | Jobs sent to the Library Helper; compression presets |
 | `js/cache.js` | Last-scan cache (IndexedDB) |
 | `js/demo.js` | Sample data for `?demo` |
 | `serve.ps1`, `Start Dashboard.cmd` | Tiny local web server for Windows |

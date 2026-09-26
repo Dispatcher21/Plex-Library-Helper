@@ -34,6 +34,8 @@ Plex account can add labels to your library, so only you can queue jobs.
 | File | What it's for |
 |---|---|
 | `library-helper.ps1` | The helper itself |
+| `compress.ps1` | Does one compression (started by the helper) |
+| `jobs\` | Compression jobs this PC ran: settings, progress and a log for each |
 | `install-helper.ps1` | Start the helper automatically whenever you sign in to Windows |
 | `uninstall-helper.ps1` | Stop it and remove it from startup |
 | `test-helper.ps1` | Checks the quarantine rules on throwaway folders (touches nothing real) |
@@ -58,6 +60,29 @@ powershell -ExecutionPolicy Bypass -File uninstall-helper.ps1
 
 It also appears in **Task Scheduler** as *Plex Library Helper*, and in Plex under
 **Settings → Authorized Devices** as *Plex Library Helper*. Removing it there revokes its access.
+
+## Compression (only on the PC with the graphics card)
+
+The helper can also compress movies when you choose **Compress…** in the dashboard. Only turn this
+on for the PC with the AMD graphics card; other PCs keep doing quarantines only.
+
+It needs, once:
+
+- **ffmpeg**: `winget install Gyan.FFmpeg`
+- **MKVToolNix**: `winget install MoritzBunkus.MKVToolNix`
+- **dovi_tool.exe** (keeps Dolby Vision) in the `tools` folder next to `helper`: the Windows zip from
+  github.com/quietvoid/dovi_tool/releases
+
+```powershell
+powershell -ExecutionPolicy Bypass -File library-helper.ps1 -EnableCompress
+# or choose where it works (needs free space of about 60% of the biggest movie):
+powershell -ExecutionPolicy Bypass -File library-helper.ps1 -EnableCompress -WorkDir D:\_PLD_WORK
+```
+
+Each compression runs as its own background program, so quarantines keep working meanwhile. Its log
+is `jobs\<job>.log`. It never changes or deletes the original: the compressed copy is added next to
+it, and replacing the original is a separate quarantine you choose in the dashboard.
+Turn it off with `-DisableCompress`.
 
 ## Putting something back
 

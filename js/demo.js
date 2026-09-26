@@ -7,7 +7,7 @@ const F = '\\\\MEDIA-PC\\PLEX (From Other Devices)';
 const D = 'D:\\Backup';
 
 function media(file, gb, res, br, ac, ch, extra = {}) {
-  return { id: Math.floor(Math.random() * 1e9), videoResolution: res, bitrate: br, videoCodec: 'hevc', audioCodec: ac, audioChannels: ch, container: 'mkv', height: { '4k': 2160, 1080: 1080, 720: 720, sd: 480 }[res], Part: [{ file, size: Math.round(gb * GB) }], ...extra };
+  return { id: Math.floor(Math.random() * 1e9), videoResolution: res, bitrate: br, videoCodec: 'hevc', audioCodec: ac, audioChannels: ch, container: 'mkv', duration: (95 + Math.round(gb) % 60) * 60000, height: { '4k': 2160, 1080: 1080, 720: 720, sd: 480 }[res], Part: [{ file, size: Math.round(gb * GB) }], ...extra };
 }
 let rk = 1000;
 function movie(title, year, tmdb, medias) { return { ratingKey: String(rk++), title, year, guid: `plex://movie/demo${tmdb}`, Guid: [{ id: `tmdb://${tmdb}` }], addedAt: 1.7e9 + rk * 1000, Media: medias }; }
@@ -27,7 +27,10 @@ export function demoSnapshots() {
       media(`${E}\\Movies\\The Wizard of Oz (1939)\\The Wizard of Oz (1939) (1080p BluRay x265 HDR afm72).mkv`, 4.6, '1080', 6300, 'aac', 6),
       media(`${E}\\Movies\\The.Wizard.Of.Oz.1939.75th\\The.Wizard.Of.Oz.1939.1080p.BluRay.x264.mp4`, 1.8, '1080', 2500, 'ac3', 6),
     ]),
-    movie('Sinners', 2025, 1233413, [media(`${E}\\Movies\\Sinners (2025)\\Sinners (2025) (2160p BluRay x265 10bit DV HDR TrueHD Atmos 7.1 r00t).mkv`, 31.7, '4k', 36000, 'truehd', 8)]),
+    movie('Sinners', 2025, 1233413, [
+      media(`${E}\\Movies\\Sinners (2025)\\Sinners (2025) (2160p BluRay x265 10bit DV HDR TrueHD Atmos 7.1 r00t).mkv`, 31.7, '4k', 36000, 'truehd', 8),
+      media(`${E}\\Movies\\Sinners (2025)\\Sinners (2025) - Compressed 4K Normal.mkv`, 7.4, '4k', 8400, 'truehd', 8),
+    ]),
     movie('Galaxy Quest', 1999, 926, [media(`${E}\\Movies\\Galaxy Quest (1999)\\Galaxy Quest (1999) (2160p BluRay x265 10bit DV HDR r00t).mkv`, 18.6, '4k', 26000, 'truehd', 8)]),
     movie('Toy Story 5', 2026, 1084244, [media(`${E}\\Movies\\Toy.Story.5.2026.1080p.WEB-DL.DDP5.1.mkv`, 2.1, '1080', 3000, 'eac3', 6)]),
     movie('A1', null, 0, [media(`${E}\\Movies\\A1_t00.mkv`, 6.9, 'sd', 8000, 'ac3', 2)]),

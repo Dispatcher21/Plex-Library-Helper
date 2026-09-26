@@ -25,7 +25,11 @@ export function locationOf(path, serverName) {
   return { id: `${serverName}/other`, machine: serverName, drive: 'Other' };
 }
 
+// Files the Library Helper made: "<Title> (<Year>) - Compressed 4K High.mkv"
+export const COMPRESSED = /\s-\sCompressed\s(4K|1080p)\b/i;
+
 function sourceOf(text, res, bitrate) {
+  if (COMPRESSED.test(text)) return 'Compressed';
   if (/_t\d{2}\.mkv$/i.test(text)) return 'Disc rip';
   if (/remux/i.test(text)) return 'Remux';
   if ((res === '4K' && bitrate > 45000) || (res === '1080p' && bitrate > 25000)) return 'Remux';
@@ -49,7 +53,8 @@ export function versionsOf(item, server, section) {
     return {
       serverId: server.id, sectionId: String(section?.key ?? item.librarySectionID ?? ''), ratingKey: item.ratingKey, mediaId: m.id,
       res, rank, height: m.height || 0, vcodec: String(m.videoCodec || '').toUpperCase(), bitrate: m.bitrate || 0,
-      acodec, ch: m.audioChannels || 0, container: m.container || '', size, files, name,
+      acodec, ch: m.audioChannels || 0, container: m.container || '', size, files, name, duration: m.duration || item.duration || 0,
+      compressed: COMPRESSED.test(name),
       loc: loc.id, machine: loc.machine, drive: loc.drive,
       src: sourceOf(tagText, res, m.bitrate || 0),
       dv: /\b(DV|DoVi|Dolby[ .]?Vision)\b/i.test(tagText),
@@ -89,7 +94,7 @@ export function normalizeEpisodes(episodes, shows, server, section) {
 
 // Higher is better: resolution, then source (remux/disc rip beat re-encodes), then Dolby Vision/HDR,
 // then lossless audio, then bitrate
-const SRC = { 'Disc rip': 3, Remux: 3, WEB: 1, Encode: 1 };
+const SRC = { 'Disc rip': 3, Remux: 3, WEB: 1, Encode: 1, Compressed: 1 };
 export function score(v) {
   if (v.missing) return -1; // a file that's gone can never be the one to keep
   return v.rank * 1e8 + (SRC[v.src] || 1) * 1e7 + (v.dv ? 2e6 : v.hdr ? 1e6 : 0) + (v.lossless ? 5e5 : 0) + Math.min(v.bitrate, 499999);
@@ -184,7 +189,7 @@ export function fmtSize(bytes) {
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
-export function fmtBitrate(kbps) { return kbps ? `${(kbps / 1000).toFixed(kbps >= 10000 ? 0 : 1)} Mbps` : '—'; }
+export function fmtBitrate(kbps) { return kbps ? `${(kbps / 1000).toFixed(kbps >= 10000 ? 0 : 1)} Mbps` : 'â€”'; }
 export function fmtAudio(v) {
   const names = { truehd: 'TrueHD', eac3: 'DD+', ac3: 'Dolby Digital', dca: 'DTS', 'dca-ma': 'DTS-HD MA', aac: 'AAC', flac: 'FLAC', opus: 'Opus', mp3: 'MP3', pcm: 'PCM' };
   const ch = v.ch ? ({ 1: '1.0', 2: '2.0', 6: '5.1', 7: '6.1', 8: '7.1' }[v.ch] || `${v.ch}ch`) : '';
