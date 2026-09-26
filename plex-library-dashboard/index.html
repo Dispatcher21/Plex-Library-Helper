@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <title>Plex Library Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e5a00d'/%3E%3Cpath d='M9 7h7l7 9-7 9H9l7-9z' fill='%23111'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><span>Library</span></div>
+    <input id="search" type="search" placeholder="Search movies and shows" autocomplete="off" hidden>
+    <div class="top-right">
+      <span id="sync" class="sync" aria-live="polite"></span>
+      <button id="jobs-btn" class="btn" hidden title="Moves and quarantines">Jobs</button>
+      <button id="refresh" class="btn" hidden title="Rescan your Plex servers">Rescan</button>
+      <button id="account" class="btn ghost" hidden></button>
+    </div>
+  </header>
+
+  <main id="app">
+    <section id="login" class="login" hidden>
+      <div class="login-card">
+        <span class="logo big" aria-hidden="true"></span>
+        <h1>Your Plex library, every drive at once</h1>
+        <p>See every movie and show across your Plex servers, which drive each copy lives on, its quality, and where you've got duplicates.</p>
+        <button id="signin" class="btn primary">Sign in with Plex</button>
+        <button id="demo" class="btn ghost">Try it with sample data</button>
+        <p class="fine">Signing in happens on plex.tv. Your Plex token stays in this browser and is only sent to plex.tv and your own servers.</p>
+        <p id="login-status" class="fine" aria-live="polite" hidden></p>
+        <p class="fine">Plex window stuck or not opening? <a href="#" id="signin-tab">Sign in in this tab instead</a></p>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </div>
+    </section>
+
+    <section id="library" hidden>
+      <div id="banner" class="banner" hidden></div>
+      <div id="stats" class="stats"></div>
+      <div id="locations" class="locations"></div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="movies" aria-selected="true">Movies</button>
+        <button role="tab" data-tab="shows" aria-selected="false">Shows</button>
+      </nav>
+      <div class="toolbar">
+        <div id="chips" class="chips"></div>
+        <div class="selects">
+          <select id="loc" aria-label="Filter by drive"></select>
+          <select id="sort" aria-label="Sort">
+            <option value="title">Title</option>
+            <option value="size">Largest first</option>
+            <option value="extra">Most space in duplicates</option>
+            <option value="added">Recently added</option>
+            <option value="year">Newest release</option>
+          </select>
+        </div>
+      </div>
+      <p id="count" class="count"></p>
+      <div id="grid" class="grid"></div>
+    </section>
+  </main>
+
+  <dialog id="detail" class="detail"><div id="detail-body"></div></dialog>
+  <dialog id="confirm" class="detail confirm"><div id="confirm-body"></div></dialog>
+  <dialog id="jobs" class="detail"><div id="jobs-body"></div></dialog>
+  <dialog id="match" class="detail"><div id="match-body"></div></dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
