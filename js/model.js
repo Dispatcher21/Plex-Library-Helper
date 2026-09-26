@@ -177,6 +177,7 @@ export function buildLocations(movies, shows, servers) {
 }
 
 export function fmtSize(bytes) {
+  if (!bytes) return '0 GB';
   const gb = bytes / GB;
   if (gb >= 1000) return `${(gb / 1024).toFixed(2)} TB`;
   if (gb >= 100) return `${Math.round(gb)} GB`;

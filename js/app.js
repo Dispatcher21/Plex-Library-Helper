@@ -57,12 +57,15 @@ async function sync() {
       renderAccount();
     }
     const servers = (await plex.getServers(state.token)).filter((s) => s.owned);
-    if (!servers.length) banner("No Plex servers were found on this account.");
-    const failures = [];
+    if (!servers.length) banner("No Plex servers were found on this account. Only servers you own are shown.");
+    const failures = []; const via = [];
     await Promise.all(servers.map(async (srv) => {
       try {
         status(`Connecting to ${srv.name}…`);
         const conn = await plex.connect(srv);
+        const how = conn.relay ? 'Plex relay (slower)' : conn.local ? 'home network' : 'remote access';
+        via.push(`${srv.name} via ${how}`);
+        status(`Connected to ${srv.name} via ${how}. Reading libraries…`);
         const api = new plex.ServerApi(srv, conn);
         state.servers[srv.id] = { ...(state.servers[srv.id] || {}), id: srv.id, name: srv.name, api, online: true, relay: conn.relay };
         const sections = await api.sections();
@@ -88,9 +91,11 @@ async function sync() {
     }));
     rebuild(); render();
     refreshJobs();
-    if (failures.length) banner(`Some servers couldn't be reached, so their last known contents are shown. ${failures.join(' · ')}`);
+    if (failures.length && failures.length === servers.length && !state.snapshots.length) {
+      banner(`Couldn't reach your Plex server. ${failures.join(' · ')} On home Wi-Fi, some routers (AT&T gateways especially) block Plex's secure local addresses: try mobile data, or set this device's DNS to 1.1.1.1 or dns.google.`);
+    } else if (failures.length) banner(`Some servers couldn't be reached, so their last known contents are shown. ${failures.join(' · ')}`);
     else banner('');
-    status(`Synced ${timeAgo(Date.now())}`);
+    status(`Synced ${timeAgo(Date.now())}${via.length ? ` · ${via.join(', ')}` : ''}`);
   } catch (err) {
     banner(`Couldn't sync with Plex: ${err.message}`);
     status('Sync failed');

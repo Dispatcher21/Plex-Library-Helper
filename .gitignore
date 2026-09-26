@@ -1,0 +1,12 @@
+# Local-only: never publish
+helper/config.json
+helper/logs/
+private/
+.claude/
+
+# OS clutter
+Thumbs.db
+.DS_Store
+
+# Packaged zips
+dist/

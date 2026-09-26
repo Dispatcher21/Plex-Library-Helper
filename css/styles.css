@@ -157,7 +157,9 @@ details.dupeps summary { cursor: pointer; font-weight: 600; }
 @media (max-width: 640px) {
   .top { flex-wrap: wrap; }
   #search { order: 3; flex-basis: 100%; max-width: none; }
-  .sync { display: none; }
+  .top-right { flex-wrap: wrap; }
+  .sync { order: 5; flex-basis: 100%; max-width: none; white-space: normal; font-size: 12px; }
+  .sync:empty { display: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px 10px; }
   .card h3 { font-size: 12px; }
   .locations { grid-template-columns: 1fr 1fr; }
