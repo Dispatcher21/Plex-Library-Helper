@@ -21,8 +21,13 @@ background program on each PC that does file work the website can't.
   - `cache.js` — IndexedDB snapshot per server (offline servers show "last seen")
   - `demo.js` — sample data; open `?demo` to test UI without Plex
 - `helper/compress.ps1` — compression worker, one process per job (see Compression below)
-- `helper/library-helper.ps1` — Windows PowerShell 5.1. `-Setup`, `-Status`, `-Once`, `-EnableCompress`, default loop.
-  Double-click `.cmd` launchers for users. `test-helper.ps1` = offline tests (must stay passing).
+- `helper/library-helper.ps1` — Windows PowerShell 5.1. `-Setup` (guided: Plex sign-in, "Use this PC for
+  encoding / compression?" with tool installs, start with Windows; re-runnable), `-Status`, `-Once`,
+  `-EnableCompress`, default loop (re-reads config.json every poll). Double-click `.cmd` launchers for
+  users. `test-helper.ps1` = offline tests (must stay passing).
+- **One download for every PC:** `download/Plex-Library-Helper.zip`, built by `make-helper-download.ps1`
+  (forward-slash entry names, CRLF `.cmd`). **Rebuild and commit it whenever `helper/` changes**; the
+  dashboard links to it (relative URL, served by Pages).
 - `serve.ps1` / `Start Dashboard.cmd` — tiny local static server on http://localhost:5173/
   (the desktop app's preview config is `plex-dashboard` in `Documents\Claude\.claude\launch.json`)
 
@@ -125,6 +130,7 @@ Plex was **not yet confirmed** (test clip `G:\PLEX\MOVIES\Compression Test DV (2
 
 ### Next
 
-- Set up the helper on LENOVOLEGION (`-Setup`, then `-EnableCompress`) and run a real job through Plex.
+- Set up the helper on LENOVOLEGION (`Set up Plex Library Helper.cmd`, answer yes) and run a real job
+  through Plex. Update the Beelink's helper from the same zip (setup there skips compression: no AMD card).
 - Confirm DV playback on the C1; then remove the test clip.
 - Push the repo-root move + v0.3 once the owner says so (Pages URL changes to the repo root).

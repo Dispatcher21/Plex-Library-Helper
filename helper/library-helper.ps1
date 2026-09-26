@@ -27,7 +27,9 @@
     The dashboard asks to stop a running one by changing its state to "stop".
 
   Usage
-    library-helper.ps1 -Setup             one-time: sign in with Plex and pick the server
+    library-helper.ps1 -Setup             set up this PC (what "Set up Plex Library Helper.cmd" runs): sign in
+                                          with Plex, choose whether this PC compresses, start with Windows.
+                                          Run it again any time to change the compression answer.
     library-helper.ps1                    run forever (what the scheduled task does)
     library-helper.ps1 -Once              process waiting jobs once and exit
     library-helper.ps1 -Status            show settings and the jobs the helper can see
@@ -38,6 +40,7 @@ param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [swit
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
@@ -366,10 +369,13 @@ function Compress-On { [bool]($script:Cfg.compress -and $script:Cfg.compress.ena
 function Find-Tools {
     $first = { param([string[]]$c) foreach ($x in $c) { if ($x -and (Test-Path -LiteralPath $x)) { return (Resolve-Path -LiteralPath $x).Path } }; $null }
     $cmd = { param($n) $g = Get-Command $n -ErrorAction SilentlyContinue | Select-Object -First 1; if ($g) { $g.Source } }
+    # winget installs aren't on PATH in the window that installed them, so also look where winget puts things
+    $links = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
+    $pkg = { param($n) Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages') -Filter $n -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
     $repoTools = Join-Path (Split-Path $Root -Parent) 'tools'
     [ordered]@{
-        ffmpeg   = & $first @((& $cmd 'ffmpeg'))
-        ffprobe  = & $first @((& $cmd 'ffprobe'))
+        ffmpeg   = & $first @((& $cmd 'ffmpeg'), "$links\ffmpeg.exe", (& $pkg 'ffmpeg.exe'))
+        ffprobe  = & $first @((& $cmd 'ffprobe'), "$links\ffprobe.exe", (& $pkg 'ffprobe.exe'))
         mkvmerge = & $first @((& $cmd 'mkvmerge'), "$env:ProgramFiles\MKVToolNix\mkvmerge.exe")
         dovi     = & $first @((Join-Path $Root 'tools\dovi_tool.exe'), (Join-Path $repoTools 'dovi_tool.exe'), (& $cmd 'dovi_tool'))
     }
@@ -378,7 +384,8 @@ function Find-Tools {
 function Enable-Compress {
     $tools = Find-Tools
     $missing = @($tools.Keys | Where-Object { -not $tools[$_] })
-    if ($missing) { throw "Missing: $($missing -join ', '). Install ffmpeg (winget install Gyan.FFmpeg) and MKVToolNix, and put dovi_tool.exe in the tools folder." }
+    $names = @{ ffmpeg = 'ffmpeg'; ffprobe = 'ffprobe (comes with ffmpeg)'; mkvmerge = 'MKVToolNix'; dovi = 'dovi_tool (tools folder)' }
+    if ($missing) { throw "still missing $(($missing | ForEach-Object { $names[$_] }) -join ', '). Run setup again and say yes to installing it." }
     $enc = & $tools.ffmpeg -hide_banner -encoders 2>$null | Out-String
     if ($enc -notmatch 'hevc_amf') { throw "This ffmpeg can't use the AMD graphics encoder (hevc_amf)." }
     if (-not $WorkDir) {
@@ -535,9 +542,126 @@ function Process-CompressJob($w, [hashtable]$shares) {
     }
 }
 
+# ---------------------------------------------------------------- guided setup (one download for every PC)
+
+function Ask([string]$question, [bool]$default) {
+    $hint = if ($default) { '[Y/n]' } else { '[y/N]' }
+    while ($true) {
+        $a = ([string](Read-Host "$question $hint")).Trim().ToLower()
+        if (-not $a) { return $default }
+        if ($a -in 'y', 'yes') { return $true }
+        if ($a -in 'n', 'no') { return $false }
+    }
+}
+function Say([string]$text, [string]$color = 'Gray') { Write-Host $text -ForegroundColor $color }
+
+function Install-WithWinget([string]$id, [string]$what) {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Say "  winget isn't available on this PC. Install $what yourself, then run setup again." Yellow; return }
+    Say "  Installing $what with winget (this can take a minute)..."
+    & winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
+}
+
+# The official Windows build from the dovi_tool project's releases page, into this folder's tools\
+function Get-DoviTool {
+    $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/quietvoid/dovi_tool/releases/latest' -Headers @{ 'User-Agent' = 'Plex-Library-Helper' }
+    $asset = @($rel.assets | Where-Object { $_.name -match '^dovi_tool-.*-x86_64-pc-windows-msvc\.zip$' })[0]
+    if (-not $asset) { throw "Couldn't find the Windows download of dovi_tool $($rel.tag_name)." }
+    $zip = Join-Path $env:TEMP $asset.name
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
+    $dest = Join-Path $Root 'tools'
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+    Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
+    Say "  dovi_tool $($rel.tag_name) saved to $dest"
+}
+
+function Setup-Compression {
+    Say ''
+    Say 'Encoding / compression' Cyan
+    Say 'The dashboard can shrink big movies (for example a 70 GB 4K disc rip to about 15-20 GB, keeping'
+    Say 'Dolby Vision). Only one PC should do this: the one with the AMD Radeon graphics card.'
+    $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name } | Where-Object { $_ })
+    Say "Graphics on this PC: $($gpus -join ', ')"
+    if (-not @($gpus | Where-Object { $_ -match 'Radeon|AMD' }).Count) {
+        Say "This PC has no AMD Radeon graphics card, so it can't compress. It will handle quarantines only." Yellow
+        if (Compress-On) { $script:Cfg.compress.enabled = $false; Save-Config; Log 'Compression turned off (no AMD graphics card).' }
+        return
+    }
+    if (-not (Ask 'Use this PC for encoding / compression?' $true)) {
+        if (Compress-On) { $script:Cfg.compress.enabled = $false; Save-Config; Log 'Compression turned off in setup.' }
+        Say 'OK: this PC will handle quarantines only. Run setup again to change this.'
+        return
+    }
+
+    # Tools it needs; each is only installed if you say yes
+    $t = Find-Tools
+    if (-not $t.ffmpeg -or -not $t.ffprobe) {
+        if (Ask 'ffmpeg (does the encoding) is not installed. Install it now?' $true) { Install-WithWinget 'Gyan.FFmpeg' 'ffmpeg' }
+    }
+    if (-not $t.mkvmerge) {
+        if (Ask 'MKVToolNix (puts the finished file together) is not installed. Install it now?' $true) { Install-WithWinget 'MoritzBunkus.MKVToolNix' 'MKVToolNix' }
+    }
+    if (-not $t.dovi) {
+        if (Ask 'dovi_tool (keeps Dolby Vision, about 3 MB from github.com/quietvoid/dovi_tool) is not here. Download it now?' $true) {
+            try { Get-DoviTool } catch { Say "  Download failed: $($_.Exception.Message)" Yellow }
+        }
+    }
+
+    # Where the half-finished encodes live: the local drive with the most free space, unless you pick another
+    $best = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Sort-Object FreeSpace -Descending | Select-Object -First 1
+    $suggest = if ($script:Cfg.compress -and $script:Cfg.compress.workDir) { $script:Cfg.compress.workDir } else { "$($best.DeviceID)\_PLD_WORK" }
+    Say ('Work folder for encodes in progress (needs free space of about 60% of the biggest movie; {0} has {1:N0} GB free).' -f $best.DeviceID, ($best.FreeSpace / 1GB))
+    $wd = ([string](Read-Host "Work folder [$suggest]")).Trim()
+    $script:WorkDir = if ($wd) { $wd } else { $suggest }
+    try {
+        Enable-Compress
+        Say "Compression is on. Work folder: $($script:Cfg.compress.workDir)" Green
+    } catch {
+        Say "Compression is not on yet: $($_.Exception.Message)" Yellow
+        Say 'Fix that, then run setup again (you will not need to sign in again).' Yellow
+    }
+}
+
+function Start-WithWindows {
+    Say ''
+    Say 'Start with Windows' Cyan
+    $task = Get-ScheduledTask -TaskName 'Plex Library Helper' -ErrorAction SilentlyContinue
+    if ($task) {
+        # Already installed: restart it so it runs this version, unless an encode is in progress
+        if (@(Running-Workers).Count) { Say 'The helper is running an encode right now, so it keeps going; new settings apply straight away, a new version after the next restart.'; return }
+        Stop-ScheduledTask -TaskName 'Plex Library Helper' -ErrorAction SilentlyContinue
+        & (Join-Path $Root 'install-helper.ps1') | Out-Host
+        return
+    }
+    if (Ask 'Start the helper now, and whenever you sign in to Windows?' $true) { & (Join-Path $Root 'install-helper.ps1') | Out-Host }
+    else { Say 'Not started. Run setup again when you want it running.' }
+}
+
+function Setup-Wizard {
+    Say "Plex Library Helper $Version setup on $env:COMPUTERNAME" Cyan
+    Say ''
+    $signIn = $true
+    if (Test-Path $ConfigPath) {
+        try {
+            $script:Cfg = Load-Config
+            Say "Already signed in: using Plex server '$($script:Cfg.serverName)'."
+            $signIn = Ask 'Sign in to Plex again?' $false
+        } catch { $signIn = $true }
+    }
+    if ($signIn) {
+        Say 'Sign in to Plex' Cyan
+        Do-Setup
+        $script:Cfg = Load-Config
+    }
+    Setup-Compression
+    Start-WithWindows
+    Say ''
+    Say 'All set. "Check status.cmd" shows what the helper is doing.' Green
+}
+
 # ---------------------------------------------------------------- main
 
-if ($Setup) { Do-Setup; exit 0 }
+if ($Setup) { Setup-Wizard; exit 0 }
 $script:Cfg = Load-Config
 $script:LocalServer = $false
 try { $script:LocalServer = [bool](Get-Process 'Plex Media Server' -ErrorAction SilentlyContinue) } catch { }
@@ -554,13 +678,15 @@ if ($Status) {
     if (Compress-On) {
         "Compression: on. Work folder $($Cfg.compress.workDir), overnight window $($Cfg.compress.nightWindow)"
         Running-Workers | ForEach-Object { "  running: $($_.mode) '$($_.title)' ($($_.preset)), worker $($_.workerPid)" }
-    } else { "Compression: off (turn on with -EnableCompress on the PC with the graphics card)" }
+    } else { "Compression: off (to use this PC, run Set up Plex Library Helper and answer yes)" }
     "Jobs visible in Plex:"; Get-Jobs | ForEach-Object { "  $($_.Job.Tag)  on '$($_.Item.title)'" }
     exit 0
 }
 
 Log "Plex Library Helper $Version started on $env:COMPUTERNAME for server '$($Cfg.serverName)' ($($Cfg.serverUrl))"
 do {
+    # Re-read settings each round, so running setup again (e.g. turning compression on) applies straight away
+    try { $script:Cfg = Load-Config } catch { Log "Couldn't re-read settings, keeping the old ones: $($_.Exception.Message)" 'WARN' }
     try { Process-Jobs } catch { Log "Polling failed: $($_.Exception.Message)" 'ERROR' }
     if ($Once) { break }
     Start-Sleep -Seconds ([int]$Cfg.pollSeconds)

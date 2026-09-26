@@ -79,12 +79,10 @@ Jobs wait while the Plex server or the helper's PC is off.
 
 ### Setting up the Library Helper (on each PC with media drives)
 
-```powershell
-cd helper
-powershell -ExecutionPolicy Bypass -File library-helper.ps1 -Setup    # approve the Plex link it opens
-powershell -ExecutionPolicy Bypass -File library-helper.ps1 -Status   # shows the shares it handles
-powershell -ExecutionPolicy Bypass -File install-helper.ps1           # start with Windows
-```
+One download for every PC: **`download/Plex-Library-Helper.zip`** (the dashboard's Jobs panel links
+to it). Unzip it and double-click **`Set up Plex Library Helper.cmd`**: it signs in to Plex (approve
+the page it opens), asks **"Use this PC for encoding / compression?"** (yes only on the PC with the
+AMD graphics card), and starts the helper with Windows.
 
 See `helper/README.md` for what it does, where its log is, and how to stop or remove it.
 
@@ -114,8 +112,9 @@ size, encode time and picture quality, in a few minutes) or **Start compressing*
   `<Title> (<Year>) - Compressed <quality>.mkv`, where Plex shows it as a second version. When you're
   happy with it, choose **Replace original…** on the compressed copy: that quarantines the original.
 
-The work is done by the Library Helper on the PC with the graphics card, which needs compression
-turned on once: see `helper/README.md`. It can compress files on other PCs' shared drives too.
+The work is done by the Library Helper on the PC with the graphics card: answer yes to
+"Use this PC for encoding / compression?" in its setup. It can compress files on other PCs' shared
+drives too.
 
 ## Limits
 
