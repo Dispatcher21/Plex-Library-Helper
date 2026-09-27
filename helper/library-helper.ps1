@@ -46,7 +46,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.2'
+$Version = '0.3.3'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -446,6 +446,60 @@ function Finish-CompressJob($jf, [string]$jobFile) {
     Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($jobFile, $null).TrimEnd('.') + '.cancel') -ErrorAction SilentlyContinue
 }
 
+# ---------------------------------------------------------------- phone notifications (ntfy)
+# When a compression or estimate finishes or fails, the helper posts one short message to a private ntfy
+# topic; the free ntfy app on the phone shows it straight away, whatever the phone or dashboard is doing.
+# Only the title and the result travel (no paths, no Plex details). Set up in -Setup.
+
+$DashboardUrl = 'https://dispatcher21.github.io/Plex-Library-Helper/'
+$PresetLabels = @{ '4kx' = '4K Extreme'; '4kh' = '4K High'; '4kn' = '4K Normal'; '4ks' = '4K Data Saver'; '1080h' = '1080p High'; '1080n' = '1080p Normal'; '1080s' = '1080p Data Saver' }
+
+function Notify-On { [bool]($script:Cfg.notify -and $script:Cfg.notify.enabled -and $script:Cfg.notify.topic) }
+
+# Same units as the dashboard (1 GB = 1024^3 bytes), so the numbers match what it shows
+function Fmt-GB([double]$bytes) { if ($bytes -ge 100GB) { '{0:N0} GB' -f ($bytes / 1GB) } else { '{0:N1} GB' -f ($bytes / 1GB) } }
+function Fmt-Time([double]$secs) {
+    $m = [int][math]::Round($secs / 60.0)
+    if ($m -lt 60) { return "$m min" }
+    if ($m % 60) { '{0} h {1} min' -f [math]::Floor($m / 60), ($m % 60) } else { '{0} h' -f ($m / 60) }
+}
+
+function Send-Ntfy([string]$title, [string]$message, [string]$tags = '', [string]$priority = 'default') {
+    $n = $script:Cfg.notify
+    $body = [ordered]@{ topic = $n.topic; title = $title; message = $message; click = $DashboardUrl; priority = $(@{ low = 2; default = 3; high = 4 }[$priority]) }
+    if ($tags) { $body.tags = @($tags -split ',') }
+    # JSON as UTF-8 bytes: Windows PowerShell 5.1 would otherwise mangle accents and arrows in titles
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Compress))
+    Invoke-RestMethod -Method Post -Uri $n.server.TrimEnd('/') -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15 | Out-Null
+}
+
+# Title, message and icon for a finished or failed job; $null when there's nothing to say
+function Job-Notification($jf, [string]$state, $result, [string]$errorText) {
+    $name = "$($jf.title)$(if ($jf.year) { " ($($jf.year))" })"
+    $preset = $PresetLabels[[string]$jf.preset]; if (-not $preset) { $preset = [string]$jf.preset }
+    if ($state -eq 'fail') {
+        if ($errorText -match 'Stopped from the dashboard|Cancelled from the dashboard') { return $null }   # you did that yourself
+        $what = if ($jf.mode -eq 'estimate') { 'Estimate' } else { 'Compression' }
+        return @{ title = "$what failed: $name"; message = "$($preset): $errorText"; tags = 'warning'; priority = 'high' }
+    }
+    $src = [double]$result.srcBytes; $out = [double]$result.bytes
+    $pct = if ($src) { ' ({0:N0}%)' -f ($out / $src * 100) } else { '' }
+    if ($jf.mode -eq 'estimate') {
+        $q = if ($result.vmaf) { ", quality $($result.vmaf)/100" } else { '' }
+        return @{ title = "Estimate ready: $name"; message = "$($preset): about $(Fmt-GB $out)$pct of $(Fmt-GB $src), about $(Fmt-Time $result.secs) to encode$q."; tags = 'bar_chart'; priority = 'default' }
+    }
+    @{ title = "Compressed: $name"; message = "$($preset): $(Fmt-GB $src) $([char]0x2192) $(Fmt-GB $out)$pct. It's next to the original in Plex; choose Replace original when you're happy with it."; tags = 'white_check_mark'; priority = 'default' }
+}
+
+# Never lets a notification problem affect the job itself
+function Notify-Job($jf, [string]$state, $result, [string]$errorText) {
+    if (-not (Notify-On)) { return }
+    try {
+        $n = Job-Notification $jf $state $result $errorText
+        if ($n) { Send-Ntfy $n.title $n.message $n.tags $n.priority; Log "Sent phone notification: $($n.title)" }
+    } catch { Log "Couldn't send the phone notification: $($_.Exception.Message)" 'WARN' }
+}
+
 function Process-CompressJob($w, [hashtable]$shares) {
     $j = $w.Job
     $age = (Get-Date) - (Job-Time $j.JobId)
@@ -520,6 +574,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
             Log ("Job {0} done: '{1}' {2:N1} GB -> {3:N1} GB at {4}" -f $j.JobId, $jf.title, ($r.srcBytes / 1GB), ($r.bytes / 1GB), $r.dest)
         } else { Log "Job $($j.JobId) estimate done: $info" }
         Finish-CompressJob $jf $jobFile
+        Notify-Job $jf 'done' $r ''
         return
     }
     if (($st -and $st.state -eq 'fail') -or -not $alive) {
@@ -527,6 +582,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
         Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' $msg)
         Log "Job $($j.JobId) failed: $msg" 'ERROR'
         Finish-CompressJob $jf $jobFile
+        Notify-Job $jf 'fail' $null $msg
         return
     }
     # Still running: report progress to Plex at most once a minute, or at once when it pauses/resumes
@@ -676,6 +732,48 @@ function Replace-OldCopy {
     $true
 }
 
+function New-Topic {
+    # Long and random: anyone who knows an ntfy topic name can read it, so it works like a password
+    $chars = 'abcdefghijkmnpqrstuvwxyz23456789'.ToCharArray()
+    $rng = New-Object Security.Cryptography.RNGCryptoServiceProvider
+    $b = New-Object byte[] 20; $rng.GetBytes($b)
+    'pld-' + (-join ($b | ForEach-Object { $chars[$_ % $chars.Length] }))
+}
+
+function Setup-Notifications {
+    if (-not (Compress-On)) { return }   # only the compressing PC has anything to report
+    Say ''
+    Say 'Phone notifications' Cyan
+    Say 'Get a notification on your phone when a compression or estimate finishes or fails, even with the'
+    Say 'phone locked and the dashboard closed. Uses the free ntfy app; only the movie title and the result'
+    Say 'are sent (through ntfy.sh), nothing else.'
+    $on = Notify-On
+    if (-not (Ask 'Send phone notifications?' $true)) {
+        if ($on) { $script:Cfg.notify.enabled = $false; Save-Config; Log 'Phone notifications turned off.' }
+        Say 'OK: no phone notifications. Run setup again to change this.'
+        return
+    }
+    $topic = if ($script:Cfg.notify -and $script:Cfg.notify.topic) { $script:Cfg.notify.topic } else { New-Topic }
+    $server = if ($script:Cfg.notify -and $script:Cfg.notify.server) { $script:Cfg.notify.server } else { 'https://ntfy.sh' }
+    $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $true; server = $server; topic = $topic })
+    Save-Config
+    Log "Phone notifications on (ntfy topic $topic)."
+    Say ''
+    Say 'On your phone:' Green
+    Say '  1. Install "ntfy" from the Play Store (or App Store).'
+    Say '  2. Open it, tap +, and subscribe to this topic (keep the server as ntfy.sh):'
+    Say ''
+    Say "       $topic" Yellow
+    Say ''
+    Say "  (Or open $($server.TrimEnd('/'))/$topic on the phone and choose to open it in the app.)"
+    Say '  Keep the topic name private: anyone who knows it can read these notifications.'
+    Say ''
+    if (Ask 'Send a test notification now?' $true) {
+        try { Send-Ntfy 'Plex Library Helper is connected' "Notifications from $env:COMPUTERNAME work. You'll hear from it when a compression or estimate finishes." 'tada'; Say 'Sent. It should appear on your phone within a few seconds.' Green }
+        catch { Say "Couldn't send it: $($_.Exception.Message)" Yellow }
+    }
+}
+
 function Setup-Wizard {
     Say "Plex Library Helper $Version setup on $env:COMPUTERNAME" Cyan
     Say ''
@@ -694,6 +792,7 @@ function Setup-Wizard {
         $script:Cfg = Load-Config
     }
     Setup-Compression
+    Setup-Notifications
     Start-WithWindows
     Say ''
     Say 'All set. "Check status.cmd" shows what the helper is doing.' Green
@@ -717,6 +816,7 @@ if ($Status) {
     "Shares handled:"; (Share-Map).GetEnumerator() | ForEach-Object { "  $($_.Key) -> $($_.Value)" }
     if (Compress-On) {
         "Compression: on. Work folder $($Cfg.compress.workDir), overnight window $($Cfg.compress.nightWindow)"
+        if (Notify-On) { "Phone notifications: on (ntfy topic $($Cfg.notify.topic) on $($Cfg.notify.server))" } else { 'Phone notifications: off (run Set up Plex Library Helper to turn them on)' }
         Running-Workers | ForEach-Object { "  running: $($_.mode) '$($_.title)' ($($_.preset)), worker $($_.workerPid)" }
     } else { "Compression: off (to use this PC, run Set up Plex Library Helper and answer yes)" }
     "Jobs visible in Plex:"; Get-Jobs | ForEach-Object { "  $($_.Job.Tag)  on '$($_.Item.title)'" }

@@ -126,6 +126,14 @@ original's folder and the work folder. It found that LENOVOLEGION (connects as `
 **can't write to `\\BEELINK-MINI\PLEX Server`**: the share needs Change permission for John before
 Beelink movies can be compressed.
 
+Phone notifications (helper 0.3.3): owner chose **ntfy** over Web Push (browser notifications only fire
+while the page is awake; Android freezes background tabs). Config `notify = { enabled, server, topic }`
+(topic `pld-` + 20 random chars, made in `-Setup` → `Setup-Notifications`, only on the compressing PC).
+`Notify-Job` runs after the label is set to done/fail and never throws; JSON publish to the server root
+as UTF-8 bytes (PS 5.1 mangles non-ASCII otherwise); `click` = `$DashboardUrl`. No message for jobs
+stopped from the dashboard. ntfy.sh is unreachable from Claude's sandbox (TLS fails), so live sends were
+never tested from there: the setup's test message is the end-to-end check.
+
 ### Compression gotchas
 
 - **`[math]::Min(1, 0.37)` returns 0** (Int32 overload, same trap as the 1MB one below): this kept GPU

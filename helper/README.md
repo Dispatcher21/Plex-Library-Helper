@@ -24,6 +24,8 @@ and to plex.tv.
      graphics card. It then offers to install what compression needs (ffmpeg, MKVToolNix, and
      dovi_tool for Dolby Vision; each only if you say yes) and asks for a work folder. A PC without an
      AMD card skips this and just does quarantines;
+   - on the compressing PC, asks **"Send phone notifications?"**: it makes a private ntfy topic
+     name, shows it, and can send a test message (see below);
    - starts the helper now and whenever you sign in to Windows.
 
 Run it again any time to change the compression answer; you won't have to sign in again.
@@ -57,6 +59,22 @@ Each compression runs as its own background program, so quarantines keep working
 by itself while someone is watching Plex or a full-screen game runs (you choose per job). Its log is
 `jobs\<job>.log`. The original is never changed: the compressed copy is added next to it, checked, and
 replacing the original is a separate quarantine you choose in the dashboard.
+
+## Phone notifications
+
+When a compression or estimate finishes or fails, the helper sends a notification to your phone
+through **ntfy** (free app, no account), even with the phone locked and the dashboard closed.
+For example: *Compressed: Harry Potter and the Sorcerer's Stone (2001) · 4K High: 71.3 GB → 14.7 GB (21%)*.
+Tapping it opens the dashboard.
+
+1. Run setup on the compressing PC and answer yes to **Send phone notifications?**. It shows a topic
+   name like `pld-7f3k9q2m...` and offers a test message.
+2. On the phone: install **ntfy** (Play Store / App Store), tap **+**, enter that topic, keep the
+   server as `ntfy.sh`, subscribe.
+
+Only the movie title and the result are sent, through ntfy.sh; no file paths or Plex details. Keep the
+topic name private: anyone who knows it can read the messages. Run setup again to turn it off.
+`Check status.cmd` shows the topic if you need it again.
 
 ## Files in this folder
 

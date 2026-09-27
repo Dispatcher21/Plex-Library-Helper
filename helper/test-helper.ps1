@@ -1,4 +1,4 @@
-# Offline tests for the Library Helper's quarantine rules. Uses throwaway folders under %TEMP%; touches nothing else.
+﻿# Offline tests for the Library Helper's quarantine rules. Uses throwaway folders under %TEMP%; touches nothing else.
 $ErrorActionPreference = 'Stop'
 $agent = Join-Path $PSScriptRoot 'library-helper.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($agent, [ref]$null, [ref]$null)
@@ -130,6 +130,30 @@ try {
     Check 'same folder: nothing to replace' (Replace-OldCopy)
     $Root = $saveRoot; $ConfigPath = $saveCfg
     Remove-Item Function:\Get-ScheduledTask, Function:\Write-Host
+
+    # 14. Phone notifications (ntfy)
+    $DashboardUrl = 'https://example.test/'
+    $PresetLabels = @{ '4kh' = '4K High' }
+    $script:Cfg = [pscustomobject]@{ notify = [pscustomobject]@{ enabled = $true; server = 'https://ntfy.example/'; topic = 'pld-test' } }
+    $jfC = [pscustomobject]@{ mode = 'compress'; title = 'Amélie'; year = 2001; preset = '4kh' }
+    $jfE = [pscustomobject]@{ mode = 'estimate'; title = 'Dune'; year = 2021; preset = '4kh' }
+    $n = Job-Notification $jfC 'done' ([pscustomobject]@{ bytes = 15GB; srcBytes = 70GB }) ''
+    Check 'compressed message' ($n.title -eq 'Compressed: Amélie (2001)' -and $n.message -like "4K High: 70.0 GB $([char]0x2192) 15.0 GB (21%)*")
+    $n = Job-Notification $jfE 'done' ([pscustomobject]@{ bytes = 20GB; srcBytes = 80GB; secs = 5400; vmaf = 94.6 }) ''
+    Check 'estimate message' ($n.title -eq 'Estimate ready: Dune (2021)' -and $n.message -eq '4K High: about 20.0 GB (25%) of 80.0 GB, about 1 h 30 min to encode, quality 94.6/100.')
+    Check 'failure message' ((Job-Notification $jfC 'fail' $null 'Not enough free space').title -eq 'Compression failed: Amélie (2001)')
+    Check 'no message for jobs you stopped' ($null -eq (Job-Notification $jfC 'fail' $null 'Stopped from the dashboard'))
+    function Invoke-RestMethod { param($Method, $Uri, $Body, $ContentType, $TimeoutSec) $script:Sent = @{ Uri = $Uri; Json = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json } }
+    Send-Ntfy 'Compressed: Amélie' "70 GB $([char]0x2192) 15 GB" 'white_check_mark'
+    Check 'ntfy: JSON to the server root with topic, click link and UTF-8 text' ($script:Sent.Uri -eq 'https://ntfy.example' -and $script:Sent.Json.topic -eq 'pld-test' -and $script:Sent.Json.click -eq 'https://example.test/' -and $script:Sent.Json.title -eq 'Compressed: Amélie' -and $script:Sent.Json.message -eq "70 GB $([char]0x2192) 15 GB" -and $script:Sent.Json.tags[0] -eq 'white_check_mark')
+    function Invoke-RestMethod { throw 'network down' }
+    $threw = $false; try { Notify-Job $jfC 'done' ([pscustomobject]@{ bytes = 1GB; srcBytes = 2GB }) '' } catch { $threw = $true }
+    Check 'a failed notification never breaks the job' (-not $threw)
+    Remove-Item Function:\Invoke-RestMethod
+    $script:Cfg.notify.enabled = $false; $script:Sent = $null
+    Notify-Job $jfC 'done' ([pscustomobject]@{ bytes = 1GB; srcBytes = 2GB }) ''
+    Check 'nothing sent when turned off' ($null -eq $script:Sent)
+    Check 'topic: long and random' ((New-Topic) -match '^pld-[a-z2-9]{20}$' -and (New-Topic) -ne (New-Topic))
 
     Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
