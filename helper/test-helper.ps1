@@ -113,6 +113,24 @@ try {
     $threw = $false; try { Preflight-Check ([pscustomobject]@{ Size = 1PB }) $pf } catch { $threw = $_.Exception.Message -match 'Not enough free space' }
     Check 'pre-flight refuses when there is no room' $threw
 
+    # 13. Setup in a new folder while an older copy is installed (browser saved the download as "(1)")
+    $oldCopy = Join-Path $root 'old copy'; $newCopy = Join-Path $root 'new copy (1)'
+    New-Item -ItemType Directory -Force "$oldCopy\jobs", "$oldCopy\tools", $newCopy | Out-Null
+    '{"serverName":"Home PC"}' | Out-File "$oldCopy\config.json" -Encoding UTF8
+    'exe' | Out-File "$oldCopy\tools\dovi_tool.exe"
+    function Get-ScheduledTask { [pscustomobject]@{ Actions = @([pscustomobject]@{ Arguments = "-NoProfile -File `"$oldCopy\library-helper.ps1`"" }) } }
+    function Write-Host { }
+    $saveRoot = $Root; $saveCfg = $ConfigPath
+    $Root = $newCopy; $ConfigPath = "$newCopy\config.json"
+    @{ title = 'Transformers'; workerPid = $PID } | ConvertTo-Json | Out-File "$oldCopy\jobs\busy.json" -Encoding UTF8   # this test's own PowerShell = a live worker
+    Check 'refuses to take over while the old copy is encoding' ((-not (Replace-OldCopy)) -and -not (Test-Path $ConfigPath))
+    Remove-Item "$oldCopy\jobs\busy.json"
+    Check 'takes over an idle old copy: keeps sign-in and dovi_tool' ((Replace-OldCopy) -and (Test-Path $ConfigPath) -and (Test-Path "$newCopy\tools\dovi_tool.exe"))
+    $Root = $oldCopy
+    Check 'same folder: nothing to replace' (Replace-OldCopy)
+    $Root = $saveRoot; $ConfigPath = $saveCfg
+    Remove-Item Function:\Get-ScheduledTask, Function:\Write-Host
+
     Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

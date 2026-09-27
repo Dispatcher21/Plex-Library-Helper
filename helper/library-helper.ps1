@@ -46,7 +46,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.1'
+$Version = '0.3.2'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -638,9 +638,48 @@ function Start-WithWindows {
     else { Say 'Not started. Run setup again when you want it running.' }
 }
 
+# Folder of the copy Windows currently starts (from the scheduled task), or $null
+function Installed-Root {
+    $t = Get-ScheduledTask -TaskName 'Plex Library Helper' -ErrorAction SilentlyContinue
+    if (-not $t) { return $null }
+    $m = [regex]::Match([string]$t.Actions[0].Arguments, '-File "([^"]+)"')
+    if ($m.Success) { Split-Path $m.Groups[1].Value -Parent } else { $null }
+}
+
+# A new download unzipped somewhere else (browsers save it as "...(1)"): take over from the old copy
+# without orphaning an encode it's running, and keep its sign-in and settings.
+function Replace-OldCopy {
+    $old = Installed-Root
+    if (-not $old -or $old.TrimEnd('\') -eq $Root.TrimEnd('\') -or -not (Test-Path -LiteralPath $old)) { return $true }
+    Say "The helper that starts with Windows is another copy, in:" Yellow
+    Say "  $old" Yellow
+    $busy = @(Get-ChildItem -LiteralPath (Join-Path $old 'jobs') -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.status.json' } | ForEach-Object {
+        $jf = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+        if (-not $jf.finished -and (Worker-Alive $jf.workerPid)) { $jf }
+    })
+    if ($busy.Count) {
+        Say "That copy is in the middle of compressing: $(($busy | ForEach-Object { $_.title }) -join ', ')." Yellow
+        Say 'Switching now would leave that encode running with nobody reporting on it. Either let it finish, or' Yellow
+        Say 'Stop it in the dashboard (Jobs), then run this setup again. Nothing was changed.' Yellow
+        return $false
+    }
+    if (-not (Test-Path $ConfigPath) -and (Test-Path (Join-Path $old 'config.json'))) {
+        Copy-Item -LiteralPath (Join-Path $old 'config.json') -Destination $ConfigPath
+        Say 'Copied its Plex sign-in and settings, so you won''t need to sign in again.'
+    }
+    if (-not (Test-Path (Join-Path $Root 'tools\dovi_tool.exe')) -and (Test-Path (Join-Path $old 'tools\dovi_tool.exe'))) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $Root 'tools') | Out-Null
+        Copy-Item -LiteralPath (Join-Path $old 'tools\dovi_tool.exe') -Destination (Join-Path $Root 'tools')
+    }
+    Say "This copy takes over. When setup has finished you can delete the old folder (its logs are the only thing in it you might want)."
+    Say ''
+    $true
+}
+
 function Setup-Wizard {
     Say "Plex Library Helper $Version setup on $env:COMPUTERNAME" Cyan
     Say ''
+    if (-not (Replace-OldCopy)) { return }
     $signIn = $true
     if (Test-Path $ConfigPath) {
         try {

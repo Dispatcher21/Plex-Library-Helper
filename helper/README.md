@@ -26,8 +26,13 @@ and to plex.tv.
      AMD card skips this and just does quarantines;
    - starts the helper now and whenever you sign in to Windows.
 
-Run it again any time to change the compression answer; you won't have to sign in again. To update,
-unzip the new download over the old folder and run it again.
+Run it again any time to change the compression answer; you won't have to sign in again.
+
+**Updating:** unzip the new download and run its setup. Over the old folder is tidiest, but if the
+browser saved it as `Plex-Library-Helper (1)` that's fine too: setup sees the older copy, takes over its
+Plex sign-in and settings (no sign-in needed), and switches Windows startup to the new folder; then you
+can delete the old one. If the old copy is in the middle of a compression, setup says so and changes
+nothing, so the encode isn't left running unattended: let it finish or Stop it in the dashboard first.
 
 ## Double-click these
 

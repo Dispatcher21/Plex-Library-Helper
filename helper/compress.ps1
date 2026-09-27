@@ -269,7 +269,8 @@ function Run-Encode([string[]]$argList, [string]$progressPath, [double]$duration
     $paused = ''; $clearSince = $null; $lastRuleCheck = [datetime]::MinValue; $frames = 0L; $pausedAt = $null; $script:LastPausedSecs = 0.0
     try {
         while (-not $p.WaitForExit(2000)) {
-            if (Test-Path -LiteralPath $script:CancelFile) { try { $p.Kill() } catch { }; throw 'Cancelled from the dashboard.' }
+            # Wait for ffmpeg to really exit, or it still holds its files when the work folder is cleaned up
+            if (Test-Path -LiteralPath $script:CancelFile) { try { $p.Kill(); $p.WaitForExit(30000) | Out-Null } catch { }; throw 'Cancelled from the dashboard.' }
             if (((Get-Date) - $lastRuleCheck).TotalSeconds -ge 5) {
                 $lastRuleCheck = Get-Date
                 $why = Pause-Reason $rules
@@ -528,8 +529,13 @@ try {
     Wlog "FAILED: $msg"
     Write-Status @{ state = 'fail'; error = $msg }
 } finally {
-    if ($script:Child -and -not $script:Child.HasExited) { try { $script:Child.Kill() } catch { } }
-    Remove-Item -LiteralPath $script:Work -Recurse -Force -ErrorAction SilentlyContinue
+    if ($script:Child -and -not $script:Child.HasExited) { try { $script:Child.Kill(); $script:Child.WaitForExit(30000) | Out-Null } catch { } }
+    # Half-finished encodes are big: retry for a bit if a file is still in use
+    for ($i = 0; $i -lt 10 -and (Test-Path -LiteralPath $script:Work); $i++) {
+        Remove-Item -LiteralPath $script:Work -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $script:Work) { Start-Sleep -Seconds 3 }
+    }
+    if (Test-Path -LiteralPath $script:Work) { Wlog "Couldn't remove the work folder $($script:Work); delete it by hand." }
 }
 
 
