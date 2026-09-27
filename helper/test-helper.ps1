@@ -269,6 +269,16 @@ try {
     $s4 = Rip-Step $st $t0.AddSeconds(200) $true @($dest) $d0 $null
     Check 'rip: done once the file has stopped growing' ($s4.state -eq 'done' -and $s4.done.Count -eq 1 -and $s4.done[0].bytes -eq 20MB -and -not $st.active)
 
+    # The real-rip bug: MakeMKV's window keeps naming the finished file and its bars sit at 100%
+    $st = @{ active = $false }
+    $rf2 = "$dest\Second_t00.mkv"; $fs = [IO.File]::Create($rf2); $fs.SetLength(10MB); $fs.Close()
+    $guiNamed = [pscustomobject]@{ Current = 100; Total = 100; OutputFile = $rf2; SourceBytes = 10MB }
+    $t1 = Get-Date
+    $null = Rip-Step $st $t1 $true @() $d0 ([pscustomobject]@{ Current = 90; Total = 90; OutputFile = $rf2; SourceBytes = 10MB })
+    (Get-Item $rf2).LastWriteTime = $t1
+    $a = Rip-Step $st $t1.AddSeconds(30) $true @() $d0 $guiNamed
+    Check 'rip: finished file named by the window, bars at 100%: done, not "ripping" forever' ($a.state -eq 'done' -and -not $st.active)
+
     # 20. Rip channel: the dashboard link and the auto-compress switch coming back from ntfy
     $DashboardUrl = 'https://example.test/'
     $script:Cfg = [pscustomobject]@{ notify = [pscustomobject]@{ enabled = $true; server = 'https://ntfy.sh'; topic = 'pld-abc' }; rip = [pscustomobject]@{ enabled = $true } }

@@ -148,7 +148,8 @@ function Read-MakeMkvInfo([string[]]$texts) {
 function Rip-Files([string[]]$dirs, [datetime]$now, [string]$outputFile) {
     $recent = { $_.Extension -eq '.mkv' -and ($now - $_.LastWriteTime).TotalSeconds -lt $RipQuietSeconds }
     $found = @()
-    if ($outputFile -and (Test-Path -LiteralPath $outputFile -PathType Leaf)) { $found += Get-Item -LiteralPath $outputFile }
+    # MakeMKV keeps naming the output file after it's finished, so it only counts while it's still growing
+    if ($outputFile -and (Test-Path -LiteralPath $outputFile -PathType Leaf)) { $found += @(Get-Item -LiteralPath $outputFile | Where-Object $recent) }
     foreach ($d in $dirs) {
         $found += @(Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | Where-Object $recent)
         foreach ($sub in Get-ChildItem -LiteralPath $d -Directory -ErrorAction SilentlyContinue | Where-Object { ($now - $_.LastWriteTime).TotalMinutes -lt 30 }) {
@@ -174,17 +175,21 @@ function Rip-Step($state, [datetime]$now, [bool]$running, [string[]]$dirs, $disc
     }
     foreach ($f in $files) {
         $h = $state.files[$f.FullName]
-        if (-not $h) { $h = @{ first = $now; firstBytes = $f.Length }; $state.files[$f.FullName] = $h }
-        $h.bytes = $f.Length; $h.seen = $now
+        if (-not $h) { $h = @{ first = $now; firstBytes = $f.Length; seen = $now }; $state.files[$f.FullName] = $h }
+        # 'seen' = last time it actually grew: a finished file keeps a fresh modified time for a while
+        if ($f.Length -ne $h.bytes) { $h.seen = $now }
+        $h.bytes = $f.Length
     }
     # files that stopped growing are finished
     foreach ($k in @($state.files.Keys)) {
-        if (($now - $state.files[$k].seen).TotalSeconds -ge $RipQuietSeconds -and $state.done -notcontains $k) { $state.done += $k }
+        $quiet = ($now - $state.files[$k].seen).TotalSeconds
+        $full = $gui -and $gui.Total -ge 100 -and $quiet -ge 20
+        if (($quiet -ge $RipQuietSeconds -or $full) -and $state.done -notcontains $k) { $state.done += $k }
     }
     $current = @($state.files.Keys | Where-Object { $state.done -notcontains $_ } | Sort-Object { $state.files[$_].seen } -Descending | Select-Object -First 1)
     if (-not $current.Count) {
-        # nothing growing any more: the rip is over once MakeMKV's bars (if we can see them) agree
-        if ($gui -and $gui.Total -lt 100 -and $running) { return (Rip-Status $state $now $null $gui 'ripping') }
+        # nothing growing any more: the rip is over, unless MakeMKV's bars say it's still going (between titles)
+        if ($gui -and $gui.Total -gt 0 -and $gui.Total -lt 100 -and $running) { return (Rip-Status $state $now $null $gui 'ripping') }
         $state.active = $false
         return (Rip-Status $state $now $null $gui 'done')
     }
