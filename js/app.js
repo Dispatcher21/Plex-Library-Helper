@@ -293,13 +293,21 @@ function jobFor(v, action) {
     && (action ? j.kind === 'compress' && j.action === action : j.kind === 'quarantine')).sort((a, b) => b.created - a.created)[0];
 }
 const ACTIVE = ['queued', 'run', 'stop'];
-const HELPER_LINK = '<a href="download/Plex-Library-Helper.zip" download>get the Library Helper</a>';
+// The helper download is named by version (Plex-Library-Helper-0.3.4.zip); download/latest.json says which is current
+let helperDownload = null;
+function helperLink() {
+  if (!helperDownload) return '<a href="https://github.com/Dispatcher21/Plex-Library-Helper/tree/main/download" target="_blank" rel="noopener">get the Library Helper</a>';
+  return `<a href="download/${esc(helperDownload.file)}" download>get the Library Helper (${esc(helperDownload.version)})</a>`;
+}
+async function loadHelperDownload() {
+  try { const r = await fetch('download/latest.json', { cache: 'no-cache' }); if (r.ok) helperDownload = await r.json(); } catch { /* the GitHub link is the fallback */ }
+}
 
 function quarantineAction(v, i) {
   const j = jobFor(v);
   if (j && j.state !== 'fail') {
     const label = { queued: 'Quarantine queued', run: 'Quarantining…', done: 'Quarantined' }[j.state] || j.state;
-    const waiting = j.state === 'queued' && Date.now() - j.created > 90000 ? `<span class="fine">Waiting for the Library Helper on ${esc(v.machine)}. Is it running? Not installed yet? ${HELPER_LINK}.</span>` : '';
+    const waiting = j.state === 'queued' && Date.now() - j.created > 90000 ? `<span class="fine">Waiting for the Library Helper on ${esc(v.machine)}. Is it running? Not installed yet? ${helperLink()}.</span>` : '';
     return `<span class="pill ${j.state}">${label}</span>${waiting}`;
   }
   const failed = j ? `<span class="pill fail" title="${esc(j.info)}">Last try failed: ${esc(j.info || 'unknown error')}</span>` : '';
@@ -341,7 +349,7 @@ function progressHtml(j) {
   const preset = `${j.show ? `${scopeText(jobScope(j))} · ` : ''}${cz.presetById(cz.jobPreset(j))?.label || ''}`;
   const verb = est ? 'Estimating' : 'Compressing';
   if (j.state === 'queued') {
-    const late = Date.now() - j.created > 90000 ? ` Waiting for the Library Helper on the PC with the graphics card. Is it running, and did you answer yes to compression in its setup? It also waits while another encode is running. Not installed yet? ${HELPER_LINK}.` : '';
+    const late = Date.now() - j.created > 90000 ? ` Waiting for the Library Helper on the PC with the graphics card. Is it running, and did you answer yes to compression in its setup? It also waits while another encode is running. Not installed yet? ${helperLink()}.` : '';
     return `<div class="cstat"><span class="pill queued">${verb} queued</span> ${esc(preset)}${late}</div>`;
   }
   if (j.state === 'stop') return `<div class="cstat"><span class="pill queued">Stopping…</span> ${esc(preset)}</div>`;
@@ -502,7 +510,7 @@ function findVersion(j) {
 function renderJobs() {
   const list = [...state.jobs].sort((a, b) => b.created - a.created);
   $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines and compressions requested from this dashboard. Finished jobs clear themselves after a day.</div>
-    <div class="sub fine">The Library Helper does these jobs on your PCs: ${HELPER_LINK} (the same download for every PC; its setup asks whether that PC should do compression).</div>
+    <div class="sub fine">The Library Helper does these jobs on your PCs: ${helperLink()} (the same download for every PC; its setup asks whether that PC should do compression).</div>
     <div class="sub fine notifyrow">${notifyControl()}</div></div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
     <div class="db">${list.length ? list.map((j, i) => {
@@ -841,7 +849,7 @@ function renderCompress() {
       <h3 class="ch">When</h3>
       <div class="opts">${cz.RULES.map((r) => `<label><input type="checkbox" data-rule="${r.id}" ${c.rules.has(r.id) ? 'checked' : ''}> ${esc(r.label)}</label>`).join('')}</div>
       ${estHtml}
-      <p class="note">The Library Helper on the PC with the graphics card does the work (${HELPER_LINK} if it isn't installed; answer yes to compression in its setup). The original is never changed: the compressed copy is added next to it, checked, and shows up in Plex as a second version. Replacing the original is a separate step afterwards. Grainy films shrink much less than the typical figures; <b>Estimate</b> encodes three short samples of this film (a few minutes) to tell you the real size, time and quality first.</p>
+      <p class="note">The Library Helper on the PC with the graphics card does the work (${helperLink()} if it isn't installed; answer yes to compression in its setup). The original is never changed: the compressed copy is added next to it, checked, and shows up in Plex as a second version. Replacing the original is a separate step afterwards. Grainy films shrink much less than the typical figures; <b>Estimate</b> encodes three short samples of this film (a few minutes) to tell you the real size, time and quality first.</p>
       ${c.error ? `<p class="error">${esc(c.error)}</p>` : ''}
       <div class="foot">
         <button class="btn" data-cest ${estRunning || c.busy || !p ? 'disabled' : ''}>${estRunning ? 'Estimating…' : est?.state === 'done' ? 'Estimate again' : 'Estimate first'}</button>
@@ -1137,7 +1145,7 @@ function startDemo() {
 // ---------- Start ----------
 
 async function start() {
-  loadPrefs(); bind();
+  loadPrefs(); bind(); loadHelperDownload();
   try {
     const t = await plex.finishSignIn();
     if (t) history.replaceState(null, '', location.pathname);

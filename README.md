@@ -79,7 +79,7 @@ Jobs wait while the Plex server or the helper's PC is off.
 
 ### Setting up the Library Helper (on each PC with media drives)
 
-One download for every PC: **`download/Plex-Library-Helper.zip`** (the dashboard's Jobs panel links
+One download for every PC: **`download/Plex-Library-Helper-<version>.zip`** (the dashboard's Jobs panel links
 to it). Unzip it and double-click **`Set up Plex Library Helper.cmd`**: it signs in to Plex (approve
 the page it opens), asks **"Use this PC for encoding / compression?"** (yes only on the PC with the
 AMD graphics card), and starts the helper with Windows.

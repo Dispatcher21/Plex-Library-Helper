@@ -1,5 +1,6 @@
-# Builds download/Plex-Library-Helper.zip: the one download every PC uses (the dashboard links to it).
-# Run after changing anything in helper\, and commit the zip with the change.
+# Builds download/Plex-Library-Helper-<version>.zip, the one download every PC uses, and download/latest.json
+# (which file is current; the dashboard reads it for its download link). Older zips are removed.
+# Run after changing anything in helper\, and commit the download folder with the change.
 #   powershell -ExecutionPolicy Bypass -File make-helper-download.ps1
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
@@ -23,8 +24,9 @@ try {
         Out-File -LiteralPath (Join-Path $dir 'VERSION.txt') -Encoding ascii
     $out = Join-Path $repo 'download'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
-    $zip = Join-Path $out 'Plex-Library-Helper.zip'
-    Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
+    $name = "Plex-Library-Helper-$version.zip"
+    $zip = Join-Path $out $name
+    Get-ChildItem -LiteralPath $out -Filter 'Plex-Library-Helper*.zip' | Remove-Item   # only the current version is kept
     # Not Compress-Archive: in Windows PowerShell 5.1 it writes "\" in entry names, which other tools reject
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $z = [IO.Compression.ZipFile]::Open($zip, 'Create')
@@ -33,5 +35,7 @@ try {
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $f.FullName, "Plex Library Helper/$($f.Name)") | Out-Null
         }
     } finally { $z.Dispose() }
-    "Built $zip (version $version, $([math]::Round((Get-Item $zip).Length / 1KB)) KB)"
+    [ordered]@{ version = $version; file = $name; bytes = (Get-Item $zip).Length; built = (Get-Date).ToString('yyyy-MM-dd') } | ConvertTo-Json |
+        Out-File -LiteralPath (Join-Path $out 'latest.json') -Encoding ascii
+    "Built $zip (version $version, $([math]::Round((Get-Item $zip).Length / 1KB)) KB) and latest.json"
 } finally { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }

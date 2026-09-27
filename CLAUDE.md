@@ -30,7 +30,7 @@ background program on each PC that does file work the website can't.
   encoding / compression?" with tool installs, start with Windows; re-runnable), `-Status`, `-Once`,
   `-EnableCompress`, default loop (re-reads config.json every poll). Double-click `.cmd` launchers for
   users. `test-helper.ps1` = offline tests (must stay passing).
-- **One download for every PC:** `download/Plex-Library-Helper.zip`, built by `make-helper-download.ps1`
+- **One download for every PC:** `download/Plex-Library-Helper-<version>.zip` + `download/latest.json` (the dashboard's link reads it), built by `make-helper-download.ps1`
   (forward-slash entry names, CRLF `.cmd`). **Rebuild and commit it whenever `helper/` changes**; the
   dashboard links to it (relative URL, served by Pages).
 - `serve.ps1` / `Start Dashboard.cmd` — tiny local static server on http://localhost:5173/
