@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $src = Join-Path $repo 'helper'
-$files = 'Set up Plex Library Helper.cmd', 'Check status.cmd', 'Stop and remove.cmd', 'README.md',
+$files = 'Set up Plex Library Helper.cmd', 'Check status.cmd', 'Empty _TO_DELETE.cmd', 'Stop and remove.cmd', 'README.md',
     'library-helper.ps1', 'compress.ps1', 'install-helper.ps1', 'uninstall-helper.ps1'
 
 $stage = Join-Path $env:TEMP ("pld-zip-" + [guid]::NewGuid().ToString('N').Substring(0, 8))

@@ -36,8 +36,10 @@
     library-helper.ps1 -Status            show settings and the jobs the helper can see
     library-helper.ps1 -EnableCompress [-WorkDir X:\_PLD_WORK]   let this PC run compression jobs
     library-helper.ps1 -DisableCompress
+    library-helper.ps1 -EmptyTrash        list what's in _TO_DELETE on this PC's drives and, after you type
+                                          DELETE, remove it for good (what "Empty _TO_DELETE.cmd" runs)
 #>
-param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [switch]$EnableCompress, [switch]$DisableCompress, [string]$WorkDir)
+param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [switch]$EnableCompress, [switch]$DisableCompress, [string]$WorkDir, [switch]$EmptyTrash)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -500,6 +502,38 @@ function Notify-Job($jf, [string]$state, $result, [string]$errorText) {
     } catch { Log "Couldn't send the phone notification: $($_.Exception.Message)" 'WARN' }
 }
 
+# Pause alerts. A pause is only worth a message once it has lasted a couple of minutes (Plex sessions
+# start and stop all the time), at most one per job every 30 minutes; "resumed" only follows a "paused".
+$PauseAlertAfter = 120; $PauseAlertEvery = 1800
+
+function Set-Prop($o, [string]$name, $value) { $o | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
+
+# Updates the job's pause bookkeeping from the worker's status; returns 'pause', 'resume' or $null
+function Track-Pause($jf, $st, [datetime]$now) {
+    if ($st.paused) {
+        if (-not $jf.pauseSince) { Set-Prop $jf 'pauseSince' $now.ToString('o'); Set-Prop $jf 'pauseNotified' $false; return $null }
+        $long = ($now - [datetime]$jf.pauseSince).TotalSeconds -ge $PauseAlertAfter
+        $quiet = -not $jf.lastPauseAlert -or ($now - [datetime]$jf.lastPauseAlert).TotalSeconds -ge $PauseAlertEvery
+        if ($long -and $quiet -and -not $jf.pauseNotified) { Set-Prop $jf 'pauseNotified' $true; Set-Prop $jf 'lastPauseAlert' $now.ToString('o'); return 'pause' }
+        return $null
+    }
+    $was = [bool]$jf.pauseNotified
+    Set-Prop $jf 'pausedFor' $(if ($jf.pauseSince) { ($now - [datetime]$jf.pauseSince).TotalSeconds } else { 0 })
+    Set-Prop $jf 'pauseSince' $null; Set-Prop $jf 'pauseNotified' $false
+    if ($was) { 'resume' } else { $null }
+}
+
+function Pause-Notification($jf, [string]$kind, $st) {
+    $name = "$($jf.title)$(if ($jf.year) { " ($($jf.year))" })"
+    $preset = $PresetLabels[[string]$jf.preset]; if (-not $preset) { $preset = [string]$jf.preset }
+    $what = if ($jf.mode -eq 'estimate') { 'estimate' } else { 'compression' }
+    if ($kind -eq 'pause') {
+        return @{ title = "Paused: $name"; message = "$preset $what at $([int]$st.percent)%: $($st.paused). It carries on by itself."; tags = 'pause_button'; priority = 'low' }
+    }
+    $left = if ($st.secsLeft) { " About $(Fmt-Time $st.secsLeft) left." } else { '' }
+    @{ title = "Resumed: $name"; message = "$preset $what carrying on from $([int]$st.percent)% after $(Fmt-Time $jf.pausedFor) paused.$left"; tags = 'arrow_forward'; priority = 'low' }
+}
+
 function Process-CompressJob($w, [hashtable]$shares) {
     $j = $w.Job
     $age = (Get-Date) - (Job-Time $j.JobId)
@@ -591,11 +625,19 @@ function Process-CompressJob($w, [hashtable]$shares) {
         $info = '{0};{1};{2};{3}' -f [int]$st.percent, $(if ($st.secsLeft) { [long]$st.secsLeft } else { '' }), $what, $jf.preset
         $pausedChanged = ([string]$jf.lastInfo -split ';')[2] -ne $what
         $due = -not $jf.lastUpdate -or ((Get-Date) - [datetime]$jf.lastUpdate).TotalSeconds -ge 60
+        $changed = $false
         if ($info -ne $jf.lastInfo -and ($due -or $pausedChanged)) {
             Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'run' $info)
-            $jf.lastInfo = $info; $jf.lastUpdate = (Get-Date).ToString('o')
-            Write-Json $jobFile $jf
+            $jf.lastInfo = $info; $jf.lastUpdate = (Get-Date).ToString('o'); $changed = $true
         }
+        # Phone alert when a pause has lasted a while, and when it carries on again
+        $before = "$($jf.pauseSince)|$($jf.pauseNotified)"
+        $alert = Track-Pause $jf $st (Get-Date)
+        if ($alert -and (Notify-On) -and $script:Cfg.notify.pauses -ne $false) {
+            try { $n = Pause-Notification $jf $alert $st; Send-Ntfy $n.title $n.message $n.tags $n.priority; Log "Sent phone notification: $($n.title)" }
+            catch { Log "Couldn't send the phone notification: $($_.Exception.Message)" 'WARN' }
+        }
+        if ($changed -or "$($jf.pauseSince)|$($jf.pauseNotified)" -ne $before) { Write-Json $jobFile $jf }
     }
 }
 
@@ -755,9 +797,11 @@ function Setup-Notifications {
     }
     $topic = if ($script:Cfg.notify -and $script:Cfg.notify.topic) { $script:Cfg.notify.topic } else { New-Topic }
     $server = if ($script:Cfg.notify -and $script:Cfg.notify.server) { $script:Cfg.notify.server } else { 'https://ntfy.sh' }
-    $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $true; server = $server; topic = $topic })
+    $pausesBefore = -not ($script:Cfg.notify -and $script:Cfg.notify.pauses -eq $false)
+    $pauses = Ask 'Also tell you when a compression pauses (for example while Plex is transcoding) and carries on again?' $pausesBefore
+    $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $true; server = $server; topic = $topic; pauses = $pauses })
     Save-Config
-    Log "Phone notifications on (ntfy topic $topic)."
+    Log "Phone notifications on (ntfy topic $topic), pause alerts $(if ($pauses) { 'on' } else { 'off' })."
     Say ''
     Say 'On your phone:' Green
     Say '  1. Install "ntfy" from the Play Store (or App Store).'
@@ -798,9 +842,95 @@ function Setup-Wizard {
     Say 'All set. "Check status.cmd" shows what the helper is doing.' Green
 }
 
+# ---------------------------------------------------------------- emptying _TO_DELETE (permanent)
+# Only ever run by a person at this PC (Empty _TO_DELETE.cmd), never from the dashboard or a job.
+# Deletes whole dated batches (<drive>:\_TO_DELETE\yyyy-MM-dd\), nothing else: never the manifest, never
+# anything outside _TO_DELETE, and never a batch containing a link (junction/symlink) that could point
+# somewhere else.
+
+function Trash-Roots {
+    @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { Join-Path "$($_.DeviceID)\" $QuarantineDir } | Where-Object { Test-Path -LiteralPath $_ })
+}
+
+# One entry per dated batch folder, with its size and the titles the manifest says went into it
+function Get-TrashBatches([string[]]$roots) {
+    foreach ($root in $roots) {
+        $titles = @{}
+        $man = Join-Path $root 'manifest.jsonl'
+        if (Test-Path -LiteralPath $man) {
+            foreach ($line in Get-Content -LiteralPath $man -Encoding UTF8) {
+                try { $m = $line | ConvertFrom-Json } catch { continue }
+                if ($m.to -and $m.title -and $m.to -match ('\\' + [regex]::Escape($QuarantineDir) + '\\(\d{4}-\d{2}-\d{2})\\')) {
+                    $key = $Matches[1]
+                    if (-not $titles[$key]) { $titles[$key] = New-Object Collections.Generic.List[string] }
+                    $t = "$($m.title)$(if ($m.year) { " ($($m.year))" })"
+                    if (-not $titles[$key].Contains($t)) { $titles[$key].Add($t) }
+                }
+            }
+        }
+        foreach ($d in Get-ChildItem -LiteralPath $root -Directory -Force | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' }) {
+            $all = @(Get-ChildItem -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue)
+            $links = @($all | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+            $when = [datetime]::MinValue; [void][datetime]::TryParseExact($d.Name, 'yyyy-MM-dd', $null, 'None', [ref]$when)
+            [pscustomobject]@{
+                Root = $root; Path = $d.FullName; Date = $when; Name = $d.Name
+                Bytes = [long](($all | Where-Object { -not $_.PSIsContainer } | Measure-Object Length -Sum).Sum)
+                Files = @($all | Where-Object { -not $_.PSIsContainer }).Count
+                Titles = @($titles[$d.Name]); HasLinks = $links.Count -gt 0
+            }
+        }
+    }
+}
+
+function Remove-TrashBatch($b) {
+    # Belt and braces: exactly <drive>:\_TO_DELETE\yyyy-MM-dd, and no links inside
+    $expect = '^[A-Za-z]:\\' + [regex]::Escape($QuarantineDir) + '\\\d{4}-\d{2}-\d{2}$'
+    if ($script:TestDrive) { $expect = '^' + [regex]::Escape((Join-Path $script:TestDrive $QuarantineDir)) + '\\\d{4}-\d{2}-\d{2}$' }
+    if ($b.Path -notmatch $expect) { throw "Refusing to delete $($b.Path): not a dated folder in $QuarantineDir" }
+    if ($b.HasLinks) { throw "Skipped $($b.Path): it contains a link to another folder, delete it by hand after checking" }
+    [IO.Directory]::Delete($b.Path, $true)
+    [ordered]@{ time = (Get-Date).ToString('o'); deleted = $b.Path; bytes = $b.Bytes; files = $b.Files; titles = $b.Titles; by = "$env:USERNAME on $env:COMPUTERNAME" } |
+        ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $b.Root 'manifest.jsonl') -Encoding UTF8
+}
+
+function Empty-Trash {
+    Say "Empty _TO_DELETE on $env:COMPUTERNAME" Cyan
+    Say 'Quarantined files wait in _TO_DELETE so you can put them back. Emptying deletes them for good.'
+    Say ''
+    $batches = @(Get-TrashBatches (Trash-Roots) | Sort-Object Root, Date)
+    if (-not $batches.Count) { Say 'Nothing waiting: _TO_DELETE is empty (or missing) on every drive of this PC.' Green; return }
+    foreach ($b in $batches) {
+        Say ('{0}  {1}  {2,9}  {3} file(s){4}' -f $b.Root.Substring(0, 2), $b.Name, (Fmt-GB $b.Bytes), $b.Files, $(if ($b.HasLinks) { '  (contains a link: will be skipped)' } else { '' })) White
+        $t = @($b.Titles | Where-Object { $_ })
+        if ($t.Count) { Say ('      ' + (($t | Select-Object -First 6) -join ', ') + $(if ($t.Count -gt 6) { " and $($t.Count - 6) more" } else { '' })) }
+    }
+    $total = ($batches | Measure-Object Bytes -Sum).Sum
+    $old = @($batches | Where-Object { $_.Date -lt (Get-Date).Date.AddDays(-7) })
+    Say ''
+    Say ('Total: {0} in {1} batch(es). {2} of it is older than 7 days.' -f (Fmt-GB $total), $batches.Count, (Fmt-GB (($old | Measure-Object Bytes -Sum).Sum)))
+    Say '  A = delete all of it'
+    Say '  O = delete only batches older than 7 days'
+    Say '  N = delete nothing (default)'
+    $c = ([string](Read-Host 'Choose A, O or N')).Trim().ToUpper()
+    $pick = switch ($c) { 'A' { $batches } 'O' { $old } default { @() } }
+    $pick = @($pick)
+    if (-not $pick.Count) { Say 'Nothing deleted.'; return }
+    Say ''
+    Say ('This permanently deletes {0} ({1} batch(es)). It cannot be undone.' -f (Fmt-GB (($pick | Measure-Object Bytes -Sum).Sum)), $pick.Count) Yellow
+    if (([string](Read-Host 'Type DELETE to confirm')).Trim() -cne 'DELETE') { Say 'Not confirmed. Nothing deleted.'; return }
+    $freed = 0L
+    foreach ($b in $pick) {
+        try { Remove-TrashBatch $b; $freed += $b.Bytes; Log "Emptied $($b.Path): $(Fmt-GB $b.Bytes), $($b.Files) files"; Say "  deleted $($b.Path)" Green }
+        catch { Log "Empty _TO_DELETE: $($_.Exception.Message)" 'WARN'; Say "  $($_.Exception.Message)" Yellow }
+    }
+    Say ''
+    Say "Freed $(Fmt-GB $freed)." Green
+}
+
 # ---------------------------------------------------------------- main
 
 if ($Setup) { Setup-Wizard; exit 0 }
+if ($EmptyTrash) { Empty-Trash; exit 0 }   # works without Plex settings
 $script:Cfg = Load-Config
 $script:LocalServer = $false
 try { $script:LocalServer = [bool](Get-Process 'Plex Media Server' -ErrorAction SilentlyContinue) } catch { }

@@ -42,6 +42,7 @@ nothing, so the encode isn't left running unattended: let it finish or Stop it i
 |---|---|
 | `Set up Plex Library Helper.cmd` | Setup (above); run again to change settings or after updating |
 | `Check status.cmd` | Is it running, which server and drives it handles, compression on/off, which jobs it can see |
+| `Empty _TO_DELETE.cmd` | Lists what's waiting in `_TO_DELETE` on this PC's drives (dates, sizes, titles) and deletes it for good only if you choose all / older than 7 days **and** type `DELETE` |
 | `Stop and remove.cmd` | Stops it and removes it from startup (asks first) |
 
 `.ps1` files open in Notepad when double-clicked; that's Windows' default. Use the `.cmd` files above.
@@ -72,6 +73,11 @@ Tapping it opens the dashboard.
 2. On the phone: install **ntfy** (Play Store / App Store), tap **+**, enter that topic, keep the
    server as `ntfy.sh`, subscribe.
 
+You also hear about **interruptions**: a compression that fails, or stops because the PC restarted
+(reported when the helper starts again). If you said yes to **pause alerts**, you get a quiet
+*Paused: … Plex is transcoding a stream* once a pause has lasted 2 minutes (at most one every 30 minutes
+per job), and *Resumed: … after 25 min paused, about 1 h left* when it carries on.
+
 Only the movie title and the result are sent, through ntfy.sh; no file paths or Plex details. Keep the
 topic name private: anyone who knows it can read the messages. Run setup again to turn it off.
 `Check status.cmd` shows the topic if you need it again.
@@ -99,6 +105,15 @@ powershell -ExecutionPolicy Bypass -File library-helper.ps1 -DisableCompress
 
 It also appears in **Task Scheduler** as *Plex Library Helper*, and in Plex under
 **Settings → Authorized Devices** as *Plex Library Helper*. Removing it there revokes its access.
+
+## Emptying _TO_DELETE
+
+Quarantined files stay in `_TO_DELETE` until you empty it. Double-click **`Empty _TO_DELETE.cmd`** on
+the PC that owns the drive (quarantined files stay on their own drive, so run it on each PC). It shows
+every batch by drive and date with its size and the movies in it, then asks: **A** all, **O** only
+batches older than 7 days, or **N** nothing; deleting also needs you to type `DELETE`. It only removes
+the dated folders inside `_TO_DELETE`, skips anything containing a link to another folder, and records
+each deletion in `manifest.jsonl`. This can't be done from the dashboard, on purpose.
 
 ## Putting something back
 

@@ -155,6 +155,49 @@ try {
     Check 'nothing sent when turned off' ($null -eq $script:Sent)
     Check 'topic: long and random' ((New-Topic) -match '^pld-[a-z2-9]{20}$' -and (New-Topic) -ne (New-Topic))
 
+    # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
+    $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
+    $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }
+    $t0 = [datetime]'2026-09-27 20:00'
+    $pausedSt = [pscustomobject]@{ paused = 'Plex is transcoding a stream'; percent = 37; secsLeft = 3000 }
+    $runSt = [pscustomobject]@{ paused = ''; percent = 37; secsLeft = 3000 }
+    $seq = @(
+        (Track-Pause $jp $pausedSt $t0),                    # pause starts: nothing yet
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(60)),     # 1 min: still nothing
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(130)),    # past 2 min: alert
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(600)),    # still paused: no repeat
+        (Track-Pause $jp $runSt $t0.AddSeconds(900)),       # carries on: resumed alert
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(1000)),   # short blip...
+        (Track-Pause $jp $runSt $t0.AddSeconds(1030)),      # ...under 2 min: nothing either way
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(1100)),   # another long pause 20 min after the first alert
+        (Track-Pause $jp $pausedSt $t0.AddSeconds(1300))    # past 2 min but within 30 min of the last alert: quiet
+    )
+    Check 'pause alerts: timing and throttling' (($seq -join ',') -eq ',,pause,,resume,,,,')
+    $jp.pausedFor = 770
+    $np = Pause-Notification $jp 'pause' $pausedSt; $nr = Pause-Notification $jp 'resume' $runSt
+    Check 'pause alert wording' ($np.title -eq 'Paused: Dune (2021)' -and $np.message -eq '4K High compression at 37%: Plex is transcoding a stream. It carries on by itself.' -and $np.priority -eq 'low')
+    Check 'resume alert wording' ($nr.title -eq 'Resumed: Dune (2021)' -and $nr.message -eq '4K High compression carrying on from 37% after 13 min paused. About 50 min left.')
+
+    # 15. Emptying _TO_DELETE: only dated batches, never through a link, logged in the manifest
+    $trash = Join-Path $root '_TO_DELETE'   # $script:TestDrive = $root, so this is "the drive's" _TO_DELETE
+    $keep = Join-Path $root 'elsewhere'; New-Item -ItemType Directory -Force $keep | Out-Null
+    MakeFile "$keep\precious.mkv" 1 | Out-Null
+    MakeFile "$trash\2020-01-01\Movies\Old (2000)\Old.mkv" 2 | Out-Null
+    New-Item -ItemType Directory -Force "$trash\2020-02-02\Movies" | Out-Null
+    cmd /c "mklink /J `"$trash\2020-02-02\Movies\Link`" `"$keep`"" | Out-Null
+    New-Item -ItemType Directory -Force "$trash\not-a-date" | Out-Null
+    '{"to":"' + ("$trash\2020-01-01\Movies\Old (2000)").Replace('\', '\\') + '","title":"Old","year":2000}' | Add-Content "$trash\manifest.jsonl" -Encoding UTF8
+    $batches = @(Get-TrashBatches @($trash))
+    $b1 = $batches | Where-Object Name -eq '2020-01-01'; $b2 = $batches | Where-Object Name -eq '2020-02-02'
+    Check 'trash: lists dated batches only, with titles and sizes' (-not ($batches | Where-Object Name -eq 'not-a-date') -and $b1 -and $b2 -and $b1.Titles -contains 'Old (2000)' -and $b1.Bytes -eq 2MB -and -not $b1.HasLinks -and $b2.HasLinks)
+    Remove-TrashBatch $b1
+    Check 'trash: batch deleted, logged, manifest kept' (-not (Test-Path $b1.Path) -and (Test-Path "$trash\manifest.jsonl") -and (Get-Content "$trash\manifest.jsonl" -Raw) -match '"deleted"')
+    $threw = $false; try { Remove-TrashBatch $b2 } catch { $threw = $true }
+    Check 'trash: batch with a link is skipped and the link target survives' ($threw -and (Test-Path "$keep\precious.mkv") -and (Test-Path $b2.Path))
+    $threw = $false; try { Remove-TrashBatch ([pscustomobject]@{ Path = $keep; HasLinks = $false; Root = $trash }) } catch { $threw = $true }
+    Check 'trash: refuses anything that is not a dated _TO_DELETE folder' ($threw -and (Test-Path "$keep\precious.mkv"))
+    cmd /c "rmdir `"$trash\2020-02-02\Movies\Link`"" | Out-Null
+
     Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

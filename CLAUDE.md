@@ -134,6 +134,15 @@ as UTF-8 bytes (PS 5.1 mangles non-ASCII otherwise); `click` = `$DashboardUrl`. 
 stopped from the dashboard. ntfy.sh is unreachable from Claude's sandbox (TLS fails), so live sends were
 never tested from there: the setup's test message is the end-to-end check.
 
+Pause alerts (`notify.pauses`, default on): `Track-Pause` in the helper's running-job branch, alert once
+a pause has lasted `$PauseAlertAfter` (120 s), at most every `$PauseAlertEvery` (30 min) per job; "resumed"
+only after a "paused". Low priority; failures are high.
+
+Emptying `_TO_DELETE` (`-EmptyTrash`, `Empty _TO_DELETE.cmd`): owner asked for it; deliberately **local and
+interactive only** (the dashboard can't see inside `_TO_DELETE`, and permanent deletion shouldn't be
+remotely triggerable). Deletes only `<drive>:\_TO_DELETE\yyyy-MM-dd` batches, skips batches containing
+reparse points, logs `{deleted, bytes, titles}` lines in manifest.jsonl.
+
 ### Compression gotchas
 
 - **`[math]::Min(1, 0.37)` returns 0** (Int32 overload, same trap as the 1MB one below): this kept GPU
