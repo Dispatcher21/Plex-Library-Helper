@@ -181,6 +181,15 @@ h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color
 .cest { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--hdr-bg); color: var(--fg); font-size: 13px; }
 .cest.error { background: var(--dup-bg); }
 
+/* MakeMKV rip in progress */
+.ripcard { border: 1px solid var(--line-strong); border-left: 4px solid var(--accent); border-radius: var(--radius); background: var(--panel); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+.ripcard .rhead { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ripcard .bar { margin: 8px 0 4px; }
+.ripcard .fine { overflow-wrap: anywhere; }
+.ripcard .actions { margin-top: 6px; }
+.ripauto { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.ripin { height: 28px; min-width: 220px; flex: 1; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg); padding: 0 8px; font-size: 12px; }
+
 /* Show seasons */
 .seasons { display: grid; gap: 8px; margin-top: 12px; }
 .season { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--card); }

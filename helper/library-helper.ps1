@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.4'
+$Version = '0.3.5'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -991,6 +991,7 @@ function Setup-Wizard {
     }
     Setup-Compression
     Setup-Notifications
+    Setup-Rips
     Start-WithWindows
     Say ''
     Say 'All set. "Check status.cmd" shows what the helper is doing.' Green
@@ -1081,7 +1082,50 @@ function Empty-Trash {
     Say "Freed $(Fmt-GB $freed)." Green
 }
 
+# ---------------------------------------------------------------- MakeMKV rips (see rips.ps1)
+
+# Opening this once on a device tells its dashboard where rip progress is published (the topic stays in the
+# part after #, which browsers never send to the website)
+function Dashboard-Link { "$($DashboardUrl)#ntfy=$($script:Cfg.notify.topic)$(if ($script:Cfg.notify.server -ne 'https://ntfy.sh') { "&server=$([Uri]::EscapeDataString($script:Cfg.notify.server))" })" }
+
+function Setup-Rips {
+    $mk = @("${env:ProgramFiles(x86)}\MakeMKV\makemkv.exe", "$env:ProgramFiles\MakeMKV\makemkv.exe") | Where-Object { Test-Path -LiteralPath $_ }
+    if (-not $mk) { return }
+    Say ''
+    Say 'MakeMKV rips' Cyan
+    Say 'MakeMKV is installed here. The helper can show the progress of your rips on the dashboard (disc, title,'
+    Say '%, speed, time left) and tell your phone when a rip finishes. You keep ripping in MakeMKV as usual.'
+    $was = [bool]($script:Cfg.rip -and $script:Cfg.rip.enabled)
+    if (-not (Ask 'Show MakeMKV rip progress on the dashboard?' $true)) {
+        if ($was) { $script:Cfg.rip.enabled = $false; Save-Config; Log 'Rip progress turned off.' }
+        return
+    }
+    if (-not ($script:Cfg.notify -and $script:Cfg.notify.topic)) {
+        # progress travels through ntfy even if you said no to phone notifications
+        $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $false; server = 'https://ntfy.sh'; topic = (New-Topic); pauses = $false })
+    }
+    $prev = $script:Cfg.rip
+    $auto = Ask 'After a rip finishes, compress it automatically? (you can switch it per rip on the dashboard)' ([bool]($prev -and $prev.autoCompress))
+    $p4 = if ($prev -and $prev.preset4k) { $prev.preset4k } else { '4kh' }
+    $pH = if ($prev -and $prev.presetHD) { $prev.presetHD } else { '1080h' }
+    if ($auto) {
+        Say '  Presets: 4kx 4K Extreme, 4kh 4K High, 4kn 4K Normal, 4ks 4K Data Saver, 1080h 1080p High, 1080n 1080p Normal, 1080s 1080p Data Saver'
+        $a = ([string](Read-Host "  Preset for 4K discs [$p4]")).Trim(); if ($a -match '^(4k[xhns]|1080[hns])$') { $p4 = $a }
+        $a = ([string](Read-Host "  Preset for Blu-rays [$pH]")).Trim(); if ($a -match '^1080[hns]$') { $pH = $a }
+        Say '  (Movies only: TV rips need their episodes named first, then compress the season from the dashboard. DVDs are left as they are.)'
+    }
+    $script:Cfg | Add-Member -NotePropertyName rip -Force -NotePropertyValue ([ordered]@{ enabled = $true; autoCompress = $auto; preset4k = $p4; presetHD = $pH })
+    Save-Config
+    Log "Rip progress on (auto-compress $(if ($auto) { "on: 4K $p4, Blu-ray $pH" } else { 'off' }))."
+    Say ''
+    Say 'Open this link once on each device (PC, phone) to show rip progress on its dashboard:' Green
+    Say "  $(Dashboard-Link)" Yellow
+    Say '  Keep it private, like the ntfy topic.'
+}
+
 # ---------------------------------------------------------------- main
+
+. (Join-Path $Root 'rips.ps1')
 
 if ($Setup) { Setup-Wizard; exit 0 }
 if ($EmptyTrash) { Empty-Trash; exit 0 }   # works without Plex settings
@@ -1101,6 +1145,7 @@ if ($Status) {
     if (Compress-On) {
         "Compression: on. Work folder $($Cfg.compress.workDir), overnight window $($Cfg.compress.nightWindow)"
         if (Notify-On) { "Phone notifications: on (ntfy topic $($Cfg.notify.topic) on $($Cfg.notify.server))" } else { 'Phone notifications: off (run Set up Plex Library Helper to turn them on)' }
+        if (Rip-On) { "MakeMKV rip progress: on. Dashboard link for each device: $(Dashboard-Link)" }
         Running-Workers | ForEach-Object { "  running: $($_.mode) '$($_.title)' ($($_.preset)), worker $($_.workerPid)" }
     } else { "Compression: off (to use this PC, run Set up Plex Library Helper and answer yes)" }
     "Jobs visible in Plex:"; Get-Jobs | ForEach-Object { "  $($_.Job.Tag)  on '$($_.Item.title)'" }
@@ -1112,6 +1157,7 @@ do {
     # Re-read settings each round, so running setup again (e.g. turning compression on) applies straight away
     try { $script:Cfg = Load-Config } catch { Log "Couldn't re-read settings, keeping the old ones: $($_.Exception.Message)" 'WARN' }
     try { Process-Jobs } catch { Log "Polling failed: $($_.Exception.Message)" 'ERROR' }
+    try { Rip-Poll } catch { Log "Rip watcher: $($_.Exception.Message)" 'WARN' }
     if ($Once) { break }
     Start-Sleep -Seconds ([int]$Cfg.pollSeconds)
 } while ($true)

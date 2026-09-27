@@ -106,6 +106,25 @@ powershell -ExecutionPolicy Bypass -File library-helper.ps1 -DisableCompress
 It also appears in **Task Scheduler** as *Plex Library Helper*, and in Plex under
 **Settings → Authorized Devices** as *Plex Library Helper*. Removing it there revokes its access.
 
+## MakeMKV rip progress
+
+On a PC with MakeMKV, setup asks **"Show MakeMKV rip progress on the dashboard?"**. You keep ripping in
+MakeMKV exactly as before; the helper watches:
+
+- which disc is in, and its titles' lengths and sizes (read from the disc);
+- MakeMKV's own progress bars when its window lets other programs read them (exact %, whole rip);
+- the file growing in MakeMKV's destination folder (bytes, speed, % estimated from the disc otherwise).
+
+The dashboard shows a **Ripping** card (disc, folder, %, speed, time left), live, from anywhere, and your
+phone gets one ntfy notification when a rip finishes. Progress travels through ntfy (a separate
+`<topic>-status` topic nobody's phone subscribes to), so each device needs to know the topic once: open
+the link setup prints (`…/#ntfy=pld-…`) on it, or paste it under **Jobs**.
+
+**Compress when finished** (optional, per rip on the card; default and presets chosen in setup): once the
+file has stopped growing, the helper asks Plex to scan it and queues a compression, 4K discs and Blu-rays
+with their own preset. Movies only: MakeMKV names TV episodes by title number, so name them first and
+compress the season from the show. DVDs are left as they are.
+
 ## Emptying _TO_DELETE
 
 Quarantined files stay in `_TO_DELETE` until you empty it. Double-click **`Empty _TO_DELETE.cmd`** on

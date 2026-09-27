@@ -4,6 +4,7 @@ import { demoSnapshots } from './demo.js';
 import * as jobsApi from './jobs.js';
 import * as cz from './compress.js';
 import * as notify from './notify.js';
+import * as rips from './rips.js';
 import { normalizeMovies, normalizeEpisodes, buildMovies, buildShows, buildLocations, finishEntry, fmtSize, fmtBitrate, fmtAudio, GB } from './model.js';
 
 const $ = (id) => document.getElementById(id);
@@ -460,6 +461,43 @@ function announce(j) {
   }
 }
 
+// ---------- MakeMKV rips (rips.js) ----------
+
+let lastRipPhase = null;
+function renderRip() {
+  const el = $('ripcard'); const s = rips.status(); const ph = rips.phase(s);
+  if (ph === 'done' && lastRipPhase === 'ripping') {
+    const total = (s.done || []).reduce((a, d) => a + d.bytes, 0);
+    notify.show(`Rip finished: ${s.folder}`, `${(s.done || []).length} file(s), ${fmtSize(total)}${s.autoCompress ? '. Compression will be queued once Plex has it.' : ''}`, `rip-${s.id}`);
+  }
+  if (ph) lastRipPhase = ph;
+  if (!ph) { el.hidden = true; return; }
+  const doneBytes = (s.done || []).reduce((a, d) => a + d.bytes, 0);
+  const auto = s.library === 'show'
+    ? '<span class="fine">TV rip: MakeMKV names episodes by title number, so name them first, then compress the season from the show.</span>'
+    : `<label class="ripauto"><input type="checkbox" data-ripauto="${esc(s.id)}" ${s.autoCompress ? 'checked' : ''}> Compress when finished</label>`;
+  if (ph === 'done') {
+    el.innerHTML = `<div class="rhead"><span class="pill done">Rip finished</span><b>${esc(s.folder)}</b><span class="fine">${esc(s.disc || '')} · ${timeAgo(new Date(s.time).getTime())}</span></div>
+      <div class="fine">${(s.done || []).length} file${(s.done || []).length === 1 ? '' : 's'} · ${fmtSize(doneBytes)} in ${cz.fmtDuration(s.elapsed)}${(s.done || []).length ? ` · ${esc(s.done.map((d) => d.file).join(', '))}` : ''}</div>
+      <div class="actions">${auto}</div>`;
+  } else {
+    const pct = s.exact && s.totalPercent !== undefined ? s.totalPercent : s.percent;
+    const stale = ph === 'stale';
+    el.innerHTML = `<div class="rhead"><span class="pill ${stale ? 'queued' : 'run'}">${stale ? 'No update' : 'Ripping'}</span><b>${esc(s.folder)}</b><span class="fine">${esc(s.disc || '')}</span></div>
+      ${pct !== undefined ? `<div class="bar"><i style="width:${Math.max(2, Math.min(100, pct))}%"></i></div>` : ''}
+      <div class="fine">${stale ? `Nothing heard from the helper for ${timeAgo(new Date(s.time).getTime()).replace(' ago', '')}: MakeMKV closed, or the PC asleep? · ` : ''}
+        ${pct !== undefined ? `${s.exact ? '' : '~'}${Math.round(pct)}%${s.exact && s.totalPercent !== undefined ? ' of the whole rip' : ''} · ` : ''}${esc(s.file || '')} · ${fmtSize(s.bytes || 0)}${s.rate ? ` · ${fmtSize(s.rate)}/s` : ''}${s.secsLeft ? ` · about ${cz.fmtDuration(s.secsLeft)} left` : ''}${(s.done || []).length ? ` · ${s.done.length} title${s.done.length === 1 ? '' : 's'} done` : ''}${s.exact ? '' : ' · % estimated from the disc'}</div>
+      <div class="actions">${auto}</div>`;
+  }
+  el.hidden = false;
+}
+
+function ripControl() {
+  const c = rips.channel();
+  if (c) return `<span>Rip progress: connected to the helper's ntfy topic <code>${esc(c.topic.slice(0, 8))}…</code></span> <button class="btn small ghost" data-ripoff>Disconnect</button>`;
+  return `<span>MakeMKV rip progress: paste the link (or topic) from the helper's setup</span> <input id="rip-topic" class="ripin" placeholder="https://…#ntfy=pld-… or pld-…"> <button class="btn small" data-ripon>Connect</button>`;
+}
+
 function notifyControl() {
   if (!notify.supported()) return '<span>Notifications need the https site (or localhost).</span>';
   if (notify.permission() === 'denied') return '<span>Notifications are blocked for this site in your browser settings; finished jobs still show a message here.</span>';
@@ -511,7 +549,8 @@ function renderJobs() {
   const list = [...state.jobs].sort((a, b) => b.created - a.created);
   $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines and compressions requested from this dashboard. Finished jobs clear themselves after a day.</div>
     <div class="sub fine">The Library Helper does these jobs on your PCs: ${helperLink()} (the same download for every PC; its setup asks whether that PC should do compression).</div>
-    <div class="sub fine notifyrow">${notifyControl()}</div></div>
+    <div class="sub fine notifyrow">${notifyControl()}</div>
+    <div class="sub fine notifyrow">${ripControl()}</div></div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
     <div class="db">${list.length ? list.map((j, i) => {
       const d = jobDescription(j);
@@ -1025,6 +1064,13 @@ function bind() {
     Object.assign(state, { token: null, user: null, servers: {}, snapshots: [] }); rebuild(); render(); status('');
   };
   $('refresh').onclick = () => sync();
+  $('ripcard').onchange = async (ev) => {
+    const cb = ev.target.closest('[data-ripauto]'); if (!cb) return;
+    cb.disabled = true;
+    try { if (state.demo) rips.demoSet(cb.checked); else await rips.setAutoCompress(cb.dataset.ripauto, cb.checked); }
+    catch (err) { cb.checked = !cb.checked; alert(`Couldn't reach the helper: ${err.message}`); }
+    finally { cb.disabled = false; }
+  };
   $('tip').onclick = (ev) => {
     if (!ev.target.closest('[data-hidetip]')) return;
     try { localStorage.setItem(TIP_HIDDEN, '1'); } catch { /* ignore */ }
@@ -1059,6 +1105,11 @@ function bind() {
   };
   $('jobs').onclick = async (ev) => {
     if (ev.target === $('jobs') || ev.target.closest('[data-close]')) { $('jobs').close(); return; }
+    if (ev.target.closest('[data-ripoff]')) { rips.disconnect(); rips.stop(); renderRip(); renderJobs(); return; }
+    if (ev.target.closest('[data-ripon]')) {
+      if (rips.connect($('rip-topic').value)) { rips.start(renderRip); renderJobs(); } else { $('rip-topic').value = ''; $('rip-topic').placeholder = "That doesn't look like the link or topic from setup"; }
+      return;
+    }
     const nb = ev.target.closest('[data-notify]');
     if (nb) {
       if (nb.dataset.notify === 'on') await notify.turnOn(); else notify.turnOff();
@@ -1138,6 +1189,7 @@ function bind() {
 
 function startDemo() {
   state.demo = true; state.snapshots = demoSnapshots(); state.jobs = [];
+  rips.demo(renderRip);
   state.demoJobs = new jobsApi.DemoJobs(() => refreshJobs());
   rebuild(); render(); status('Sample data');
 }
@@ -1146,6 +1198,9 @@ function startDemo() {
 
 async function start() {
   loadPrefs(); bind(); loadHelperDownload();
+  rips.takeFromUrl();   // opened from the helper's setup link: remember its ntfy topic
+  window.addEventListener('hashchange', () => { if (rips.takeFromUrl()) rips.start(renderRip); });   // …or pasted into an open tab
+  setInterval(renderRip, 30000);   // so 'No update for …' stays true
   try {
     const t = await plex.finishSignIn();
     if (t) history.replaceState(null, '', location.pathname);
@@ -1153,6 +1208,7 @@ async function start() {
   state.token = plex.getToken();
   if (new URLSearchParams(location.search).has('demo')) { startDemo(); return; }
   if (!state.token) { render(); return; }
+  rips.start(renderRip);   // live rip progress, if this device is connected to the helper's ntfy topic
   state.snapshots = await cache.loadAll();
   rebuild(); render();
   if (state.snapshots.length) status(`Showing last scan from ${timeAgo(Math.max(...state.snapshots.map((s) => s.lastSeen)))}`);

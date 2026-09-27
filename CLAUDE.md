@@ -163,6 +163,20 @@ they never see show jobs: the Beelink's helper must be updated before show quara
 - Dashboard: season cards (Compress…, Replace N originals with compressed, Keep best, Quarantine…),
   show-wide versions, missing-episode gaps (`missingText`), job progress on the show.
 
+### MakeMKV rip progress (helper 0.3.5, `helper/rips.ps1`, `js/rips.js`)
+
+Owner chose: watch normal MakeMKV GUI rips (no helper-driven ripping), movies and TV, ntfy as the channel,
+optional auto-compress. Watcher runs every poll (`Rip-Poll`): MakeMKV running → `.mkv` files growing
+in MakeMKV's destinations (`HKCU:\Software\MakeMKV` `path_DestDirMRU` + `app_DestinationDir`; also holds
+the licence key: never print it) → status. Progress: MakeMKV's Qt progress bars via UI Automation
+(`MakeMkv-Progress`, **untested on a real rip**) else file size vs disc titles (`Get-DiscTitles`: MPLS
+parser for BDMV, VTS sizes for DVD; `Expected-Bytes`: movie disc = longest title, else median).
+A file quiet for 90 s is done. Status JSON → `<topic>-status` (priority 1); dashboard polls the last 2 h
+then streams `/sse`; `{"cmd":"autocompress","id","on"}` ← `<topic>-cmd`. Auto-compress: Plex scan, find the
+item among the 40 newest, queue `pldc:...:c:` with `rip.preset4k` / `rip.presetHD` (movie libraries only).
+The dashboard learns the topic from `#ntfy=` (setup's `Dashboard-Link`) or pasting in Jobs (localStorage).
+This PC: disc drive F:, MakeMKV 1.17.7, rips into `G:\PLEX\MOVIES\<Title (Year)>` / `G:\PLEX\TV\...`.
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg

@@ -222,6 +222,66 @@ try {
     $ns = Job-Notification $jfS 'done' ([pscustomobject]@{ bytes = 3GB; srcBytes = 12GB; episodes = 10; done = 9; failed = 1; problem = 'S01E05: file not found' }) ''
     Check 'season notification: counts and the problem, flagged' ($ns.title -eq 'Compressed: Comp Show (2019) - Season 1' -and $ns.message -like '1080p Normal: 9 of 10 episodes, 12.0 GB * 3.0 GB (25%). 1 not done: S01E05: file not found' -and $ns.priority -eq 'high')
 
+    # 19. MakeMKV rip watcher: reading the disc, estimating, following a rip
+    . (Join-Path $PSScriptRoot 'rips.ps1')
+    $disc = Join-Path $root 'disc'
+    New-Item -ItemType Directory -Force "$disc\BDMV\PLAYLIST", "$disc\BDMV\STREAM" | Out-Null
+    # a minimal Blu-ray playlist: header, then play items (clip name, in/out time at 45 kHz)
+    function Write-Mpls($path, [object[]]$items) {
+        $ms = New-Object IO.MemoryStream
+        $w = { param([long]$v, [int]$n) for ($k = $n - 1; $k -ge 0; $k--) { $ms.WriteByte([byte](($v -shr (8 * $k)) -band 0xFF)) } }
+        $ms.Write([Text.Encoding]::ASCII.GetBytes('MPLS0200'), 0, 8); & $w 40 4; & $w 0 4; & $w 0 4
+        while ($ms.Length -lt 40) { $ms.WriteByte(0) }
+        & $w (6 + 22 * $items.Count) 4; & $w 0 2; & $w $items.Count 2; & $w 0 2
+        foreach ($it in $items) {
+            & $w 20 2; $ms.Write([Text.Encoding]::ASCII.GetBytes($it[0]), 0, 5); $ms.Write([Text.Encoding]::ASCII.GetBytes('M2TS'), 0, 4)
+            & $w 0 2; & $w 0 1; & $w 0 4; & $w ([long]($it[1] * 45000)) 4
+        }
+        [IO.File]::WriteAllBytes($path, $ms.ToArray())
+    }
+    Write-Mpls "$disc\BDMV\PLAYLIST\00800.mpls" @(,@('00100', 7200))              # the film, 2 h
+    Write-Mpls "$disc\BDMV\PLAYLIST\00801.mpls" @(,@('00100', 7200))              # same clips again (a duplicate)
+    Write-Mpls "$disc\BDMV\PLAYLIST\00100.mpls" @(,@('00200', 1500))              # a 25 min extra
+    Write-Mpls "$disc\BDMV\PLAYLIST\00001.mpls" @(,@('00300', 30))                # a menu loop: too short
+    foreach ($c in @(@('00100', 40), @('00200', 5), @('00300', 1))) { $fs = [IO.File]::Create("$disc\BDMV\STREAM\$($c[0]).m2ts"); $fs.SetLength($c[1] * 1MB); $fs.Close() }
+    $titles = @(Get-DiscTitles "$disc\")
+    Check 'disc: titles with lengths and sizes, duplicates and short ones left out' ($titles.Count -eq 2 -and $titles[0].Seconds -eq 7200 -and $titles[0].Bytes -eq 40MB -and $titles[1].Bytes -eq 5MB)
+    Check 'estimate: a movie disc means the film' ((Expected-Bytes $titles 1MB) -eq 40MB)
+    $tv = @(1..4 | ForEach-Object { [pscustomobject]@{ Seconds = 1320; Bytes = (5 + $_) * 1MB } })
+    Check 'estimate: a TV disc means a typical episode' ((Expected-Bytes $tv 1MB) -eq 8MB)
+    Check 'estimate: a growing file never shows 100%' ((Expected-Bytes $titles 45MB) -gt 45MB)
+
+    $dest = Join-Path $root 'rips\Coraline (2009)'; New-Item -ItemType Directory -Force $dest | Out-Null
+    $rf = "$dest\Coraline_t00.mkv"
+    $st = @{ active = $false }
+    $t0 = Get-Date
+    Check 'no rip: nothing to report' ($null -eq (Rip-Step $st $t0 $true @($dest) @() $null))
+    $fs = [IO.File]::Create($rf); $fs.SetLength(10MB); $fs.Close()
+    $d0 = @([pscustomobject]@{ Root = "$disc\"; Label = 'CORALINE'; Bytes = 50MB })
+    $s1 = Rip-Step $st $t0 $true @($dest) $d0 $null
+    $fs = [IO.File]::Open($rf, 'Open'); $fs.SetLength(20MB); $fs.Close()
+    $s2 = Rip-Step $st $t0.AddSeconds(10) $true @($dest) $d0 $null
+    Check 'rip: disc name, folder, file, bytes, speed and estimated %' ($s2.state -eq 'ripping' -and $s2.disc -eq 'CORALINE' -and $s2.folder -eq 'Coraline (2009)' -and $s2.file -eq 'Coraline_t00.mkv' -and $s2.bytes -eq 20MB -and $s2.rate -eq 1MB -and $s2.percent -eq 50 -and -not $s2.exact -and $s2.secsLeft -eq 20)
+    $gui = [pscustomobject]@{ Current = 60; Total = 30 }
+    $s3 = Rip-Step $st $t0.AddSeconds(20) $true @($dest) $d0 $gui
+    Check "rip: MakeMKV's own bars win when readable" ($s3.exact -and $s3.percent -eq 60 -and $s3.totalPercent -eq 30)
+    (Get-Item $rf).LastWriteTime = $t0.AddSeconds(20)
+    $s4 = Rip-Step $st $t0.AddSeconds(200) $true @($dest) $d0 $null
+    Check 'rip: done once the file has stopped growing' ($s4.state -eq 'done' -and $s4.done.Count -eq 1 -and $s4.done[0].bytes -eq 20MB -and -not $st.active)
+
+    # 20. Rip channel: the dashboard link and the auto-compress switch coming back from ntfy
+    $DashboardUrl = 'https://example.test/'
+    $script:Cfg = [pscustomobject]@{ notify = [pscustomobject]@{ enabled = $true; server = 'https://ntfy.sh'; topic = 'pld-abc' }; rip = [pscustomobject]@{ enabled = $true } }
+    Check 'rip: dashboard link carries the topic after #' ((Dashboard-Link) -eq 'https://example.test/#ntfy=pld-abc')
+    $script:Rip = @{ active = $true; id = 'r1' }; $script:RipCmdSince = $null
+    function Invoke-WebRequest { param($Uri) $script:AskedUri = $Uri; [pscustomobject]@{ Content = (@(
+        '{"id":"a1","event":"open"}',
+        ('{"id":"a2","event":"message","message":' + ('{"cmd":"autocompress","id":"old","on":true}' | ConvertTo-Json) + '}'),
+        ('{"id":"a3","event":"message","message":' + ('{"cmd":"autocompress","id":"r1","on":true}' | ConvertTo-Json) + '}')) -join "`n") } }
+    Read-RipCommands
+    Check 'rip: switch for this rip applied, others ignored, position remembered' ($script:Rip.autoCompress -eq $true -and $script:RipCmdSince -eq 'a3' -and $script:AskedUri -eq 'https://ntfy.sh/pld-abc-cmd/json?poll=1&since=10m')
+    Remove-Item Function:\Invoke-WebRequest
+
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
     $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }
