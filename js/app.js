@@ -159,16 +159,16 @@ function relayTip(servers) {
   const el = $('tip');
   let hidden = false; try { hidden = localStorage.getItem(TIP_HIDDEN) === '1'; } catch { /* ignore */ }
   if (!servers.length || hidden) { el.hidden = true; return; }
-  el.innerHTML = `<b>Connected to ${esc(servers.join(', '))} through Plex's relay</b>: Plex's servers pass everything along, which works but is slower (and limits video quality in the Plex apps).
-    <details><summary>On your home Wi-Fi? Here's the usual fix</summary>
-    <p>Your router is probably blocking Plex's direct connection (AT&amp;T gateways do this). Point this device at Google's DNS instead:</p>
+  el.innerHTML = `<details><summary>ⓘ Slow connection to ${esc(servers.join(', '))} (Plex relay): how to fix</summary>
+    <p>This device couldn't reach your Plex server directly, so Plex's servers are passing everything along. It works, but it's slower (and limits video quality in the Plex apps).</p>
+    <p>On your home Wi-Fi, your router is probably blocking Plex's direct connection (AT&amp;T gateways do this). Point this device at Google's DNS instead:</p>
     <ul>
       <li><b>Android:</b> Settings → Connections → More connection settings → Private DNS → Private DNS provider hostname → <code>dns.google</code></li>
       <li><b>Windows PC:</b> Settings → Network &amp; internet → your connection → DNS server assignment → Edit → Manual: IPv4 <code>1.1.1.1</code> and <code>8.8.8.8</code>, and IPv6 <code>2606:4700:4700::1111</code> and <code>2001:4860:4860::8888</code> (both, or Windows keeps using the router)</li>
       <li><b>iPhone / iPad:</b> Settings → Wi-Fi → ⓘ next to your network → Configure DNS → Manual → <code>1.1.1.1</code>, <code>8.8.8.8</code></li>
     </ul>
     <p>Then reload this page: the line at the top should say “via home network”. Away from home, the relay is normal if Plex's remote access isn't reachable.</p></details>
-    <button class="btn small ghost" data-hidetip>Hide</button>`;
+    <button class="x" data-hidetip title="Don't show this again on this device" aria-label="Hide">×</button>`;
   el.hidden = false;
 }
 function banner(t) { const b = $('banner'); b.textContent = t; b.hidden = !t; }

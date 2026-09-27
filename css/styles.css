@@ -55,9 +55,11 @@ main { max-width: 1400px; margin: 0 auto; padding: 16px; padding-bottom: max(40p
 .error { color: var(--bad) !important; }
 
 .banner { padding: 10px 14px; border-radius: var(--radius); background: var(--sd-bg); color: var(--sd); margin-bottom: 12px; }
-.banner.tip { background: var(--hd-bg); color: var(--fg); font-size: 13px; }
-.banner.tip details { margin: 6px 0; }
-.banner.tip summary { cursor: pointer; color: var(--hd); font-weight: 600; }
+.banner.tip { background: var(--hd-bg); color: var(--fg); font-size: 13px; padding: 6px 10px 6px 14px; display: flex; gap: 8px; align-items: flex-start; }
+.banner.tip details { flex: 1; min-width: 0; }
+.banner.tip summary { cursor: pointer; color: var(--hd); font-weight: 600; padding: 2px 0; }
+.banner.tip .x { background: none; border: 0; color: var(--fg3); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 4px; }
+.banner.tip .x:hover { color: var(--fg); }
 .banner.tip ul { margin: 6px 0; padding-left: 20px; display: grid; gap: 4px; }
 .banner.tip p { margin: 6px 0; }
 .banner.tip code { font: 12px ui-monospace, Consolas, monospace; background: var(--bg); padding: 0 4px; border-radius: 4px; }
