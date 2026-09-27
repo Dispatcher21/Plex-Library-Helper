@@ -187,14 +187,16 @@ function Item-Labels([string]$ratingKey) {
 # Replace one job label on an item with another, keeping every other label untouched.
 # The new label goes on first, so a failure part-way never leaves the job without a label.
 function Swap-Label([string]$sectionId, [string]$ratingKey, [string]$old, [string]$new) {
+    # Movies are Plex type 1, shows type 2 (show jobs live on the show, since episodes have no labels)
+    $type = if ($script:ItemTypes -and $script:ItemTypes[$ratingKey]) { $script:ItemTypes[$ratingKey] } else { 1 }
     if ($new) {
         $keep = @(@(Item-Labels $ratingKey) | Where-Object { $_ -and $_ -ne $old -and $_ -ne $new }) + $new
-        $p = @{ type = 1; id = $ratingKey; 'label.locked' = 1 }
+        $p = @{ type = $type; id = $ratingKey; 'label.locked' = 1 }
         for ($i = 0; $i -lt $keep.Count; $i++) { $p["label[$i].tag.tag"] = $keep[$i] }
         Pms PUT "/library/sections/$sectionId/all" $p | Out-Null
     }
     if ($old -and @(Item-Labels $ratingKey) -contains $old) {
-        Pms PUT "/library/sections/$sectionId/all" @{ type = 1; id = $ratingKey; 'label[].tag.tag-' = $old } | Out-Null
+        Pms PUT "/library/sections/$sectionId/all" @{ type = $type; id = $ratingKey; 'label[].tag.tag-' = $old } | Out-Null
     }
 }
 
@@ -214,7 +216,9 @@ function Is-Video([string]$name) { $name -match '\.(mkv|mp4|avi|m4v|mov|wmv|ts|m
 
 # ---------------------------------------------------------------- jobs
 
-function Quarantine($job, $item, $media, [hashtable]$shares) {
+# -Episode: never move the folder. A season folder is shared by many episodes, and episodes are often
+# smaller than the 300 MB "is this another movie" threshold, so the movie rule could take the whole season.
+function Quarantine($job, $item, $media, [hashtable]$shares, [switch]$Episode) {
     $parts = @($media.Part)
     $local = @()
     foreach ($p in $parts) {
@@ -234,7 +238,7 @@ function Quarantine($job, $item, $media, [hashtable]$shares) {
     $ownFolder = $false
     $isDriveRoot = $folder.TrimEnd('\') -eq $drive.TrimEnd('\')
     $isShareRoot = @($shares.Values | Where-Object { $_.TrimEnd('\').ToLower() -eq $folder.TrimEnd('\').ToLower() }).Count -gt 0
-    if (-not $isDriveRoot -and -not $isShareRoot -and @(Get-ChildItem -LiteralPath $folder -Directory -Force).Count -le 20) {
+    if (-not $Episode -and -not $isDriveRoot -and -not $isShareRoot -and @(Get-ChildItem -LiteralPath $folder -Directory -Force).Count -le 20) {
         $mine = @($local.Local | ForEach-Object { $_.ToLower() })
         $others = @(Get-ChildItem -LiteralPath $folder -Recurse -File -Force | Where-Object {
             (Is-Video $_.Name) -and $_.Length -gt 300MB -and ($mine -notcontains $_.FullName.ToLower())
@@ -259,7 +263,9 @@ function Quarantine($job, $item, $media, [hashtable]$shares) {
         foreach ($f in $local) {
             # the video plus same-name sidecars (subtitles, .nfo, artwork)
             $base = [IO.Path]::GetFileNameWithoutExtension($f.Local)
-            $group = @(Get-ChildItem -LiteralPath $folder -File -Force | Where-Object { $_.FullName -eq $f.Local -or ($_.BaseName -like "$base*" -and -not (Is-Video $_.Name)) })
+            # Episodes: exactly "<name>.<anything>" so E01's clean-up can't take E10's subtitles
+            $sidecar = if ($Episode) { { $_.Name.StartsWith("$base.", [StringComparison]::OrdinalIgnoreCase) } } else { { $_.BaseName -like "$base*" } }
+            $group = @(Get-ChildItem -LiteralPath $folder -File -Force | Where-Object { $_.FullName -eq $f.Local -or ((& $sidecar) -and -not (Is-Video $_.Name)) })
             foreach ($g in $group) {
                 $dest = Join-Path $qRoot $g.FullName.Substring($drive.Length)
                 if (Test-Path -LiteralPath $dest) { $dest = [IO.Path]::Combine((Split-Path $dest -Parent), "$($job.JobId)-$($g.Name)") }
@@ -284,16 +290,96 @@ function Refresh-Plex([string]$sectionId, [string]$plexFolder) {
 
 function Get-Jobs {
     $jobs = @()
-    $sections = @((Pms GET '/library/sections').MediaContainer.Directory | Where-Object { $_.type -eq 'movie' })
+    $script:ItemTypes = @{}
+    $sections = @((Pms GET '/library/sections').MediaContainer.Directory | Where-Object { $_.type -in 'movie', 'show' })
     foreach ($s in $sections) {
+        $type = if ($s.type -eq 'show') { 2 } else { 1 }
         $labels = @((Pms GET "/library/sections/$($s.key)/label").MediaContainer.Directory | Where-Object { $_.title -and (Parse-Label $_.title) })
         foreach ($l in $labels) {
             $j = Parse-Label $l.title; if (-not $j) { continue }
-            $items = @((Pms GET "/library/sections/$($s.key)/all" @{ type = 1; label = $l.key }).MediaContainer.Metadata)
-            foreach ($it in $items) { if ($it) { $jobs += [pscustomobject]@{ Job = $j; Section = [string]$s.key; Item = $it } } }
+            $items = @((Pms GET "/library/sections/$($s.key)/all" @{ type = $type; label = $l.key }).MediaContainer.Metadata)
+            foreach ($it in $items) {
+                if (-not $it) { continue }
+                $script:ItemTypes[[string]$it.ratingKey] = $type
+                $jobs += [pscustomobject]@{ Job = $j; Section = [string]$s.key; Item = $it; IsShow = $type -eq 2 }
+            }
         }
     }
     $jobs
+}
+
+# ---------------------------------------------------------------- show jobs
+# Label on the show:  pld:<jobId>:qm|qma:sh<showRatingKey>:<state>:ids=<mediaId>+<mediaId>...;n=<count>;s=<what>
+# Quarantines those episode copies. The dashboard puts copies from one drive in each label, so one helper
+# does each label. qm = keep-best clean-up: each copy is only moved if another copy of that episode
+# still exists and isn't being quarantined too. qma = you chose to remove these (whole season/show).
+
+function Show-Episodes([string]$showKey, [switch]$CheckFiles) {
+    $p = @{}; if ($CheckFiles) { $p.checkFiles = 1 }
+    @((Pms GET "/library/metadata/$showKey/allLeaves" $p).MediaContainer.Metadata | Where-Object { $_ })
+}
+
+function Episode-Name($ep, $show) {
+    '{0} - S{1:00}E{2:00}{3}' -f $show.title, [int]$ep.parentIndex, [int]$ep.index, $(if ($ep.title) { " - $($ep.title)" } else { '' })
+}
+
+function Process-ShowJob($w, [hashtable]$shares) {
+    $j = $w.Job
+    $age = (Get-Date) - (Job-Time $j.JobId)
+    if ($j.State -in 'done', 'fail' -and $age.TotalHours -gt 24) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag $null; Log "Cleared finished job label $($j.JobId)"; return }
+    if ($j.State -eq 'run' -and $age.TotalHours -gt 2) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Library Helper stopped while running this job'); return }
+    if ($j.State -ne 'queued') { return }
+    if ($j.Action -notin 'qm', 'qma') { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' "Unknown action '$($j.Action)'"); return }
+
+    $opt = @{}; foreach ($kv in ($j.Info -split ';')) { if ($kv -match '^\s*(\w+)=(.*)$') { $opt[$Matches[1].ToLower()] = $Matches[2].Trim() } }
+    $ids = @(([string]$opt['ids']) -split '\+' | Where-Object { $_ -match '^\d+$' })
+    if (-not $ids.Count) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'No episodes listed'); return }
+
+    $show = $w.Item
+    $eps = Show-Episodes $show.ratingKey -CheckFiles:($j.Action -eq 'qm')
+    $byId = @{}
+    foreach ($ep in $eps) { foreach ($m in @($ep.Media)) { if ($m) { $byId[[string]$m.id] = [pscustomobject]@{ Ep = $ep; Media = $m } } } }
+    $targets = @($ids | ForEach-Object { $byId[$_] } | Where-Object { $_ })
+    # Only claim a label whose copies are on this PC's drives
+    $mine = @($targets | Where-Object { @($_.Media.Part | Where-Object { To-Local $_.file $shares }).Count -gt 0 })
+    if (-not $mine.Count) {
+        if (-not $targets.Count) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Plex no longer lists these episodes') }
+        return
+    }
+
+    $runTag = Job-Label $j 'run'
+    Swap-Label $w.Section $w.Item.ratingKey $j.Tag $runTag
+    Log "Job $($j.JobId): quarantine $($mine.Count) episode cop$(if ($mine.Count -eq 1) { 'y' } else { 'ies' }) of $($show.title) ($($opt['s']))"
+    # Other active quarantine labels on this show: their copies don't count as survivors either
+    $busy = @(@(Item-Labels $show.ratingKey) | ForEach-Object { Parse-Label $_ } | Where-Object { $_ -and $_.Action -like 'q*' -and $_.State -in 'queued', 'run', 'done' -and $_.JobId -ne $j.JobId } |
+        ForEach-Object { if ($_.Action -in 'qm', 'qma') { ([regex]::Match($_.Info, 'ids=([\d+]+)').Groups[1].Value -split '\+') } else { $_.MediaId } })
+    $all = @($ids) + $busy
+    $bytes = 0L; $moved = 0; $failed = @(); $folders = @{}
+    foreach ($t in $mine) {
+        $name = Episode-Name $t.Ep $show
+        try {
+            if ($j.Action -eq 'qm') {
+                $survivors = @(@($t.Ep.Media) | Where-Object {
+                    $all -notcontains [string]$_.id -and @(@($_.Part) | Where-Object { $_.exists -eq $false -or $_.accessible -eq $false }).Count -eq 0
+                })
+                if (-not $survivors.Count) { throw 'kept: no other copy of this episode still exists' }
+            }
+            $jobForMove = [pscustomobject]@{ JobId = $j.JobId; MediaId = [string]$t.Media.id }
+            $r = Quarantine $jobForMove ([pscustomobject]@{ title = $name; year = $show.year }) $t.Media $shares -Episode
+            if ($r.skip) { continue }
+            $bytes += $r.bytes; $moved++; $folders[$r.refresh] = $true
+            foreach ($m in $r.moved) { Log "  moved $($m.from) -> $($m.to)" }
+        } catch { $failed += "$('S{0:00}E{1:00}' -f [int]$t.Ep.parentIndex, [int]$t.Ep.index): $($_.Exception.Message)"; Log "  $name not moved: $($_.Exception.Message)" 'WARN' }
+    }
+    foreach ($f in $folders.Keys) { Refresh-Plex $w.Section $f }
+    if (-not $moved -and $failed.Count) {
+        Swap-Label $w.Section $w.Item.ratingKey $runTag (Job-Label $j 'fail' $failed[0])
+    } else {
+        # x (first problem) sorts last, so if the label gets cut at 120 characters only that is shortened
+        $info = Fmt-Info @{ b = $bytes; n = $moved; f = $failed.Count; s = $opt['s']; x = $(if ($failed.Count) { ($failed[0] -replace '[;=+]', ' ') } else { '' }) }
+        Swap-Label $w.Section $w.Item.ratingKey $runTag (Job-Label $j 'done' $info)
+    }
+    Log ("Job {0} done: {1} moved ({2:N1} GB), {3} not moved" -f $j.JobId, $moved, ($bytes / 1GB), $failed.Count)
 }
 
 function Process-Jobs {
@@ -303,6 +389,10 @@ function Process-Jobs {
         $j = $w.Job
         if ($j.Prefix -eq $CompressPrefix) {
             try { Process-CompressJob $w $shares } catch { Log "Compression job $($j.JobId) on '$($w.Item.title)': $($_.Exception.Message)" 'ERROR' }
+            continue
+        }
+        if ($w.IsShow) {
+            try { Process-ShowJob $w $shares } catch { Log "Show job $($j.JobId) on '$($w.Item.title)': $($_.Exception.Message)" 'ERROR' }
             continue
         }
         $age = (Get-Date) - (Job-Time $j.JobId)

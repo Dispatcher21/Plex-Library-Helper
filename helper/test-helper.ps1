@@ -155,6 +155,49 @@ try {
     Check 'nothing sent when turned off' ($null -eq $script:Sent)
     Check 'topic: long and random' ((New-Topic) -match '^pld-[a-z2-9]{20}$' -and (New-Topic) -ne (New-Topic))
 
+    # 17. Show quarantines: episode copies listed on the show's label; season folders never moved whole
+    $sd = "$root\Shows\Test Show (2020)\Season 1"
+    $f1 = "$sd\Test Show - S01E01.mkv"; $s1 = MakeFile $f1 5; MakeFile "$sd\Test Show - S01E01.en.srt" 1 | Out-Null
+    MakeFile "$sd\Test Show - S01E010.en.srt" 1 | Out-Null   # another episode's subtitles with a similar name
+    $f2a = "$sd\Test Show - S01E02.mkv"; $s2a = MakeFile $f2a 5
+    $f2b = "$sd\Test Show - S01E02 (WEB).mkv"; $s2b = MakeFile $f2b 4
+    $f3 = "$sd\Test Show - S01E03.mkv"; $s3 = MakeFile $f3 5
+    $ep = { param($n, $media) [pscustomobject]@{ parentIndex = 1; index = $n; title = "Ep $n"; Media = $media } }
+    $md = { param($id, $file, $size) [pscustomobject]@{ id = $id; Part = @([pscustomobject]@{ file = (Plexify $file); size = $size }) } }
+    $script:FakeEps = @(
+        (& $ep 1 @(& $md 101 $f1 $s1)),
+        (& $ep 2 @((& $md 201 $f2a $s2a), (& $md 202 $f2b $s2b))),
+        (& $ep 3 @(& $md 301 $f3 $s3)))
+    $script:ShowLabels = @()
+    function Pms($method, $path, $params) {
+        if ($method -eq 'GET' -and $path -like '*/allLeaves') { return @{ MediaContainer = @{ Metadata = $script:FakeEps } } }
+        if ($method -eq 'GET' -and $path -match '^/library/metadata/\d+$') { return @{ MediaContainer = @{ Metadata = @(@{ Label = @($script:ShowLabels | ForEach-Object { @{ tag = $_ } }) }) } } }
+        if ($method -eq 'PUT') {
+            if ($params.ContainsKey('label[].tag.tag-')) { $script:ShowLabels = @($script:ShowLabels | Where-Object { $_ -ne $params['label[].tag.tag-'] }) }
+            else { $script:ShowLabels = @($params.Keys | Where-Object { $_ -like 'label*tag.tag' } | Sort-Object | ForEach-Object { $params[$_] }) }
+        }
+        $null
+    }
+    $script:Cfg = [pscustomobject]@{ serverName = 'Test' }
+    $runShow = { param($tag) $script:ShowLabels = @($tag)
+        $w = [pscustomobject]@{ Job = (Parse-Label $tag); Section = '5'; Item = [pscustomobject]@{ ratingKey = '900'; title = 'Test Show'; year = 2020 }; IsShow = $true }
+        Process-ShowJob $w $shares; $script:ShowLabels }
+    # clean-up: the WEB copy of E02 goes (the other copy survives); E03's only copy is kept by the guard
+    $after = & $runShow 'pld:t1-a:qm:sh900:queued:ids=202+301;n=2;s=S01'
+    Check 'show clean-up: duplicate moved, last copy kept by the guard' ((-not (Test-Path $f2b)) -and (Test-Path $f2a) -and (Test-Path $f3) -and ("$after" -match ':done:.*f=1;n=1;s=S01;x=S01E03'))
+    Check 'show clean-up: the season folder and other episodes stay put' ((Test-Path $sd) -and (Test-Path $f1) -and (Test-Path "$sd\Test Show - S01E01.en.srt"))
+    # removing a season on purpose (qma): E01 moves with its subtitles, no guard
+    $after = & $runShow 'pld:t1-b:qma:sh900:queued:ids=101;n=1;s=S01'
+    Check 'season quarantine: episode and its subtitles moved, labelled done' ((-not (Test-Path $f1)) -and -not (Test-Path "$sd\Test Show - S01E01.en.srt") -and (Test-Path "$root\_TO_DELETE\*\Shows\Test Show (2020)\Season 1\Test Show - S01E01.en.srt") -and ("$after" -match ':done:.*n=1'))
+    $man = @(Get-Content "$root\_TO_DELETE\manifest.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.job -eq 't1-b' })
+    Check "a similar-named episode's subtitles stay" (Test-Path "$sd\Test Show - S01E010.en.srt")
+    Check 'show quarantine recorded with episode names' ($man.Count -ge 1 -and $man[0].title -eq 'Test Show - S01E01 - Ep 1')
+    $after = & $runShow 'pld:t1-c:qma:sh900:queued:ids=999;n=1;s=S01'
+    Check 'unknown episode: job fails instead of hanging' ("$after" -match ':fail:')
+    $after = & $runShow 'pld:t1-d:qma:sh900:queued:ids=101+999;n=2;s=S01'
+    Check 'already-moved file: reported, not crashed' ("$after" -match ':fail:.*File not found')
+    Remove-Item Function:\Pms
+
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
     $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }
