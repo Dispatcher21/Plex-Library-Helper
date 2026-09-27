@@ -177,6 +177,19 @@ item among the 40 newest, queue `pldc:...:c:` with `rip.preset4k` / `rip.presetH
 The dashboard learns the topic from `#ntfy=` (setup's `Dashboard-Link`) or pasting in Jobs (localStorage).
 This PC: disc drive F:, MakeMKV 1.17.7, rips into `G:\PLEX\MOVIES\<Title (Year)>` / `G:\PLEX\TV\...`.
 
+### Live channel, pause, tray (helper 0.3.7, `helper/live.ps1`, `helper/tray.ps1`)
+
+One ntfy topic pair per household: `<topic>-status` (helper -> dashboard: kinds `helper`, `trash`, `trashResult`,
+`rip`, each with `pc`) and `<topic>-cmd` (dashboard -> helpers: `pause`, `emptytrash`, `autocompress`; each helper
+acts only on its own `pc`). `Live-Poll` each poll: writes `state.json` (tray), reads commands, publishes helper
+status on change / every 5 min and the trash summary on change / every 15 min. Pause = file `jobs\PAUSED`:
+no job starts, and compress.ps1's `Pause-Reason` freezes the running encode (resumes within ~5 s). Remote
+empty: request must name this PC, be < 10 min old (ntfy replays old messages to a restarted helper), not be
+in `jobs\done-requests.txt`, and only batches the helper itself lists are deleted. The Beelink joins via
+`Setup-Channel` (paste the topic). Tray: WinForms NotifyIcon in its own STA PowerShell, started by the
+helper (`Start-Tray`), one per folder (mutex), reads `state.json` every 3 s; tooltip max 63 characters.
+Gotcha: a test helper function named `Cmd` hijacked `cmd /c` (names are case-insensitive): don't.
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg

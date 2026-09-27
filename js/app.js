@@ -262,6 +262,8 @@ function renderStats() {
     <div class="stat"><span>Shows · episodes</span><b>${state.shows.length} · ${epCount.toLocaleString()}</b></div>
     <div class="stat"><span>Library size</span><b>${fmtSize(size)}</b></div>
     <div class="stat"><span>In duplicates (${dupes} titles)</span><b>${fmtSize(extra)}</b></div>`;
+  const waiting = rips.trashes().reduce((a, t) => a + t.total, 0);
+  if (waiting) $('stats').innerHTML += `<button class="stat" data-openjobs title="See and empty _TO_DELETE"><span>Waiting in _TO_DELETE</span><b>${fmtSize(waiting)}</b></button>`;
 }
 
 function renderAccount() {
@@ -492,6 +494,92 @@ function renderRip() {
   el.hidden = false;
 }
 
+// ---------- Helpers on the live channel: pause switch and _TO_DELETE ----------
+
+// Called whenever something arrives on the channel
+function liveChanged() {
+  renderRip();
+  if (!$('library').hidden) renderStats();
+  if ($('jobs').open) renderJobs();
+  if ($('confirm').open && pendingTrash) renderTrashConfirm();
+}
+
+function helperLine(h) {
+  const stale = Date.now() - new Date(h.time).getTime() > 12 * 60000;   // helpers report at least every 5 min
+  const jobs = (h.jobs || []).map((j) => `${j.mode === 'estimate' ? 'estimating' : 'compressing'} ${esc(j.title)} ${j.percent}%${j.secsLeft ? ` (about ${cz.fmtDuration(j.secsLeft)} left)` : ''}${/^paused/.test(j.what || '') ? ` · ${esc(j.what)}` : ''}`);
+  const doing = stale ? `not heard from since ${timeAgo(new Date(h.time).getTime())}` : jobs.length ? jobs.join(', ') : h.paused ? 'compressions paused' : 'idle';
+  const btn = h.compress && !stale ? `<button class="btn small ${h.paused ? 'primary' : ''}" data-hpause="${esc(h.pc)}" data-on="${h.paused ? 0 : 1}">${h.paused ? 'Resume compressions' : 'Pause all compressions'}</button>` : '';
+  return `<div class="liverow"><span><b>${esc(h.pc)}</b> <span class="fine">helper ${esc(h.version || '?')}</span> · ${doing}</span>${btn}</div>`;
+}
+
+function trashLine(t) {
+  return `<div class="liverow"><span><b>${esc(t.pc)}</b> · ${fmtSize(t.total)} in ${t.batches.length} batch${t.batches.length === 1 ? '' : 'es'}
+    <span class="fine">${t.batches.map((b) => `${esc(b.drive)} ${esc(b.date)} ${fmtSize(b.bytes)}`).join(' · ')}</span></span>
+    <button class="btn small danger" data-trash="${esc(t.pc)}">Empty…</button></div>`;
+}
+
+function liveSection() {
+  if (!rips.channel() && !state.demo) return '';
+  const hs = rips.helpers(); const ts = rips.trashes();
+  return `${hs.length ? `<h3 class="ch">Library Helpers</h3>${hs.map(helperLine).join('')}` : ''}
+    ${ts.length ? `<h3 class="ch">Waiting in _TO_DELETE</h3>${ts.map(trashLine).join('')}<p class="fine">Quarantined files wait here so you can put them back; emptying deletes them for good.</p>` : ''}`;
+}
+
+let pendingTrash = null;
+function openTrashConfirm(pc) {
+  const t = rips.trashes().find((x) => x.pc === pc); if (!t) return;
+  pending = null; pendingShow = null;
+  pendingTrash = { pc, selected: new Set(t.batches.map((b) => b.path)), typed: '', req: null, sending: false, error: '' };
+  renderTrashConfirm();
+  $('confirm').showModal();
+}
+
+function renderTrashConfirm() {
+  const p = pendingTrash; const t = rips.trashes().find((x) => x.pc === p.pc) || { batches: [] };
+  const res = p.req ? rips.result(p.req) : null;
+  let body;
+  if (res) {
+    body = `<h2 style="margin:0 0 4px">Emptied _TO_DELETE on ${esc(p.pc)}</h2>
+      <p>Freed <b>${fmtSize(res.freed)}</b>${res.deleted?.length ? ` (${res.deleted.length} batch${res.deleted.length === 1 ? '' : 'es'})` : ''}.</p>
+      ${res.errors?.length ? `<p class="warn">${esc(res.errors.join(' · '))}</p>` : ''}
+      <div class="foot"><button class="btn primary" data-close>Done</button></div>`;
+  } else if (p.req) {
+    body = `<h2 style="margin:0 0 4px">Emptying _TO_DELETE on ${esc(p.pc)}…</h2>
+      <p class="fine">Waiting for the Library Helper on ${esc(p.pc)} to do it and report back (usually under a minute). You can close this; the result also shows in Jobs.</p>
+      <div class="foot"><button class="btn ghost" data-close>Close</button></div>`;
+  } else {
+    const old = (b) => (Date.now() - new Date(b.date).getTime()) / 86400000 > 7;
+    const chosen = t.batches.filter((b) => p.selected.has(b.path));
+    const total = chosen.reduce((a, b) => a + b.bytes, 0);
+    body = `<h2 style="margin:0 0 4px">Empty _TO_DELETE on ${esc(p.pc)}?</h2>
+      <p class="fine">This <b>permanently deletes</b> the chosen batches. They can't be put back afterwards.</p>
+      <div class="actions"><button class="btn small ghost" data-tsel="all">All</button><button class="btn small ghost" data-tsel="old">Older than 7 days</button><button class="btn small ghost" data-tsel="none">None</button></div>
+      <ul>${t.batches.map((b) => `<li><label class="tbatch"><input type="checkbox" data-tb="${esc(b.path)}" ${p.selected.has(b.path) ? 'checked' : ''} ${b.links ? 'disabled' : ''}>
+        <span><b>${esc(b.drive)} ${esc(b.date)} · ${fmtSize(b.bytes)}</b> · ${b.files} file${b.files === 1 ? '' : 's'}${old(b) ? '' : ' · <span class="fine">less than a week old</span>'}${b.links ? ' · <span class="warn">contains a link: empty it at the PC</span>' : ''}
+        ${(b.titles || []).length ? `<code>${esc(b.titles.join(', '))}${b.more ? ` and ${b.more} more` : ''}</code>` : ''}</span></label></li>`).join('')}</ul>
+      <p>Frees <b>${fmtSize(total)}</b>. Type <code>DELETE</code> to confirm:</p>
+      <input id="trash-typed" class="ripin" autocomplete="off" value="${esc(p.typed)}" placeholder="DELETE">
+      ${p.error ? `<p class="error">${esc(p.error)}</p>` : ''}
+      <div class="foot"><button class="btn ghost" data-close>Cancel</button><button class="btn danger solid" data-tgo ${p.typed === 'DELETE' && chosen.length && !p.sending ? '' : 'disabled'}>${p.sending ? 'Sending…' : `Delete ${fmtSize(total)} for good`}</button></div>`;
+  }
+  const focused = document.activeElement?.id === 'trash-typed';
+  $('confirm-body').innerHTML = `<div class="db" style="padding-top:18px">${body}</div>`;
+  if (focused) { const i = $('trash-typed'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+}
+
+async function sendTrash() {
+  const p = pendingTrash; const t = rips.trashes().find((x) => x.pc === p.pc); if (!t) return;
+  const batches = t.batches.filter((b) => p.selected.has(b.path) && !b.links).map((b) => b.path);
+  const req = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  p.sending = true; renderTrashConfirm();
+  try {
+    const cmd = { cmd: 'emptytrash', pc: p.pc, req, batches };
+    if (state.demo) rips.demoCommand(cmd); else await rips.command(cmd);
+    p.req = req;
+  } catch (err) { p.error = `Couldn't send: ${err.message}`; }
+  p.sending = false; renderTrashConfirm();
+}
+
 function ripControl() {
   const c = rips.channel();
   if (c) return `<span>Rip progress: connected to the helper's ntfy topic <code>${esc(c.topic.slice(0, 8))}…</code></span> <button class="btn small ghost" data-ripoff>Disconnect</button>`;
@@ -550,7 +638,8 @@ function renderJobs() {
   $('jobs-body').innerHTML = `<div class="dh"><div><h2>Jobs</h2><div class="sub">Quarantines and compressions requested from this dashboard. Finished jobs clear themselves after a day.</div>
     <div class="sub fine">The Library Helper does these jobs on your PCs: ${helperLink()} (the same download for every PC; its setup asks whether that PC should do compression).</div>
     <div class="sub fine notifyrow">${notifyControl()}</div>
-    <div class="sub fine notifyrow">${ripControl()}</div></div>
+    <div class="sub fine notifyrow">${ripControl()}</div>
+    ${liveSection()}</div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
     <div class="db">${list.length ? list.map((j, i) => {
       const d = jobDescription(j);
@@ -578,7 +667,7 @@ function actionFor(v, e, versions) {
 
 let pending = null;
 function confirmQuarantine(e, versions) {
-  pending = { e, versions }; pendingShow = null;
+  pending = { e, versions }; pendingShow = null; pendingTrash = null;
   const all = survivors(e, versions).length === 0;
   $('confirm-body').innerHTML = `<div class="db" style="padding-top:18px">
     <h2 style="margin:0 0 4px">Quarantine ${versions.length === 1 ? 'this copy' : `${versions.length} copies`} of ${esc(e.title)}?</h2>
@@ -1064,6 +1153,13 @@ function bind() {
     Object.assign(state, { token: null, user: null, servers: {}, snapshots: [] }); rebuild(); render(); status('');
   };
   $('refresh').onclick = () => sync();
+  $('confirm').oninput = (ev) => { if (pendingTrash && ev.target.id === 'trash-typed') { pendingTrash.typed = ev.target.value.trim(); renderTrashConfirm(); } };
+  $('confirm').onchange = (ev) => {
+    const cb = ev.target.closest('[data-tb]'); if (!cb || !pendingTrash) return;
+    cb.checked ? pendingTrash.selected.add(cb.dataset.tb) : pendingTrash.selected.delete(cb.dataset.tb);
+    renderTrashConfirm();
+  };
+  $('stats').onclick = (ev) => { if (ev.target.closest('[data-openjobs]')) { renderJobs(); $('jobs').showModal(); } };
   $('ripcard').onchange = async (ev) => {
     const cb = ev.target.closest('[data-ripauto]'); if (!cb) return;
     cb.disabled = true;
@@ -1078,8 +1174,18 @@ function bind() {
   };
   $('jobs-btn').onclick = () => { renderJobs(); $('jobs').showModal(); refreshJobs(); };
   $('confirm').onclick = (ev) => {
-    if (ev.target === $('confirm') || ev.target.closest('[data-close]')) { $('confirm').close(); pending = null; pendingShow = null; return; }
+    if (ev.target === $('confirm') || ev.target.closest('[data-close]')) { $('confirm').close(); pending = null; pendingShow = null; pendingTrash = null; return; }
     if (ev.target.closest('[data-go]')) { if (pendingShow) runShowQuarantine(); else runQuarantine(); }
+    if (pendingTrash) {
+      const sel = ev.target.closest('[data-tsel]');
+      if (sel) {
+        const t = rips.trashes().find((x) => x.pc === pendingTrash.pc);
+        const old = (b) => (Date.now() - new Date(b.date).getTime()) / 86400000 > 7;
+        pendingTrash.selected = new Set((t?.batches || []).filter((b) => !b.links && (sel.dataset.tsel === 'all' || (sel.dataset.tsel === 'old' && old(b)))).map((b) => b.path));
+        renderTrashConfirm();
+      }
+      if (ev.target.closest('[data-tgo]')) sendTrash();
+    }
   };
   $('match').onclick = (ev) => {
     if (ev.target === $('match') || ev.target.closest('[data-close]')) { $('match').close(); return; }
@@ -1105,9 +1211,18 @@ function bind() {
   };
   $('jobs').onclick = async (ev) => {
     if (ev.target === $('jobs') || ev.target.closest('[data-close]')) { $('jobs').close(); return; }
+    const hp = ev.target.closest('[data-hpause]');
+    if (hp) {
+      hp.disabled = true; hp.textContent = 'Sending…';
+      const cmd = { cmd: 'pause', pc: hp.dataset.hpause, on: hp.dataset.on === '1' };
+      try { if (state.demo) rips.demoCommand(cmd); else await rips.command(cmd); } catch (err) { alert(err.message); renderJobs(); }
+      return;
+    }
+    const tr = ev.target.closest('[data-trash]');
+    if (tr) { $('jobs').close(); openTrashConfirm(tr.dataset.trash); return; }
     if (ev.target.closest('[data-ripoff]')) { rips.disconnect(); rips.stop(); renderRip(); renderJobs(); return; }
     if (ev.target.closest('[data-ripon]')) {
-      if (rips.connect($('rip-topic').value)) { rips.start(renderRip); renderJobs(); } else { $('rip-topic').value = ''; $('rip-topic').placeholder = "That doesn't look like the link or topic from setup"; }
+      if (rips.connect($('rip-topic').value)) { rips.start(liveChanged); renderJobs(); } else { $('rip-topic').value = ''; $('rip-topic').placeholder = "That doesn't look like the link or topic from setup"; }
       return;
     }
     const nb = ev.target.closest('[data-notify]');
@@ -1189,7 +1304,7 @@ function bind() {
 
 function startDemo() {
   state.demo = true; state.snapshots = demoSnapshots(); state.jobs = [];
-  rips.demo(renderRip);
+  rips.demoHelpers(); rips.demo(liveChanged);
   state.demoJobs = new jobsApi.DemoJobs(() => refreshJobs());
   rebuild(); render(); status('Sample data');
 }
@@ -1199,7 +1314,7 @@ function startDemo() {
 async function start() {
   loadPrefs(); bind(); loadHelperDownload();
   rips.takeFromUrl();   // opened from the helper's setup link: remember its ntfy topic
-  window.addEventListener('hashchange', () => { if (rips.takeFromUrl()) rips.start(renderRip); });   // …or pasted into an open tab
+  window.addEventListener('hashchange', () => { if (rips.takeFromUrl()) rips.start(liveChanged); });   // …or pasted into an open tab
   setInterval(renderRip, 30000);   // so 'No update for …' stays true
   try {
     const t = await plex.finishSignIn();
@@ -1208,7 +1323,7 @@ async function start() {
   state.token = plex.getToken();
   if (new URLSearchParams(location.search).has('demo')) { startDemo(); return; }
   if (!state.token) { render(); return; }
-  rips.start(renderRip);   // live rip progress, if this device is connected to the helper's ntfy topic
+  rips.start(liveChanged);   // live rip progress, if this device is connected to the helper's ntfy topic
   state.snapshots = await cache.loadAll();
   rebuild(); render();
   if (state.snapshots.length) status(`Showing last scan from ${timeAgo(Math.max(...state.snapshots.map((s) => s.lastSeen)))}`);

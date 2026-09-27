@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.6'
+$Version = '0.3.7'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -698,6 +698,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
         if (-not $mode) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' "Unknown action '$($j.Action)'"); return }
         if (Test-Path -LiteralPath $jobFile) { return }                 # already claimed; label update pending
         if (@(Running-Workers $mode).Count) { return }                 # one compress and one estimate at a time
+        if (Is-Paused) { return }                                      # paused from the tray or dashboard: wait
         if ($w.IsShow) { Start-ShowCompress $w $j $mode $shares $jobFile; return }
         $media = @($w.Item.Media) | Where-Object { [string]$_.id -eq $j.MediaId } | Select-Object -First 1
         if (-not $media) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Plex no longer lists this copy'); return }
@@ -988,6 +989,29 @@ function Setup-Notifications {
     Say '   - Android Settings > Apps > ntfy > Notifications: allowed; Battery: Unrestricted'
     Say '  Then run setup again to send another test.'
 }
+# PCs without their own notifications/rips (e.g. the file server) still join the dashboard's live channel,
+# so their _TO_DELETE shows there. They use the same topic as the main PC.
+function Setup-Channel {
+    if ($script:Cfg.notify -and $script:Cfg.notify.topic) { return }
+    Say ''
+    Say 'Connect to the dashboard' Cyan
+    Say 'Lets the dashboard show what is waiting in _TO_DELETE on this PC and empty it (you confirm there).'
+    Say 'It uses the private ntfy topic set up on your main PC (shown there by "Check status", starting pld-).'
+    if (-not (Ask 'Connect this PC?' $true)) { return }
+    while ($true) {
+        $t = ([string](Read-Host 'Paste the topic (or the dashboard link) from your main PC, or press Enter to skip')).Trim()
+        if (-not $t) { return }
+        $t = $t -replace '^.*#ntfy=', '' -replace '[&?].*$', ''
+        if ($t -match '^pld-[a-z0-9]{8,}$') { break }
+        Say "  That doesn't look like a topic (it starts with pld-). Try again." Yellow
+    }
+    $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $false; server = 'https://ntfy.sh'; topic = $t; pauses = $false })
+    Save-Config
+    Log "Connected to the dashboard channel ($t)."
+    $p = Test-Ntfy 'https://ntfy.sh'
+    if ($p) { Say "  Saved, but: $p" Yellow } else { Say '  Connected.' Green }
+}
+
 function Setup-Wizard {
     Say "Plex Library Helper $Version setup on $env:COMPUTERNAME" Cyan
     Say ''
@@ -1008,6 +1032,7 @@ function Setup-Wizard {
     Setup-Compression
     Setup-Notifications
     Setup-Rips
+    Setup-Channel
     Start-WithWindows
     Say ''
     Say 'All set. "Check status.cmd" shows what the helper is doing.' Green
@@ -1145,6 +1170,7 @@ function Setup-Rips {
 # ---------------------------------------------------------------- main
 
 . (Join-Path $Root 'rips.ps1')
+. (Join-Path $Root 'live.ps1')
 
 if ($Setup) { Setup-Wizard; exit 0 }
 if ($EmptyTrash) { Empty-Trash; exit 0 }   # works without Plex settings
@@ -1173,11 +1199,13 @@ if ($Status) {
 }
 
 Log "Plex Library Helper $Version started on $env:COMPUTERNAME for server '$($Cfg.serverName)' ($($Cfg.serverUrl))"
+if (-not $Once) { try { Start-Tray } catch { Log "Couldn't start the tray icon: $($_.Exception.Message)" 'WARN' } }
 do {
     # Re-read settings each round, so running setup again (e.g. turning compression on) applies straight away
     try { $script:Cfg = Load-Config } catch { Log "Couldn't re-read settings, keeping the old ones: $($_.Exception.Message)" 'WARN' }
     try { Process-Jobs } catch { Log "Polling failed: $($_.Exception.Message)" 'ERROR' }
     try { Rip-Poll } catch { Log "Rip watcher: $($_.Exception.Message)" 'WARN' }
+    try { Live-Poll } catch { Log "Live status: $($_.Exception.Message)" 'WARN' }
     if ($Once) { break }
     Start-Sleep -Seconds ([int]$Cfg.pollSeconds)
 } while ($true)

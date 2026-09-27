@@ -29,9 +29,47 @@ export function takeFromUrl() {
 let latest = null; let source = null; let onChange = () => {};
 export function status() { return latest; }
 
+// Everything else on the channel, newest per PC: what each helper is doing (kind 'helper'), what's waiting
+// in its _TO_DELETE ('trash'), and answers to 'empty' requests ('trashResult', by request id)
+const byPc = { helper: {}, trash: {} }; const results = {};
+export function helpers() { return Object.values(byPc.helper).sort((a, b) => a.pc.localeCompare(b.pc)); }
+export function trashes() { return Object.values(byPc.trash).filter((t) => t.batches?.length).sort((a, b) => a.pc.localeCompare(b.pc)); }
+export function result(req) { return results[req] || null; }
+
 function take(msg) {
   if (msg?.event !== 'message') return;
-  try { const s = JSON.parse(msg.message); if (s?.kind === 'rip') { latest = { ...s, received: Date.now() }; onChange(latest); } } catch { /* not ours */ }
+  let s; try { s = JSON.parse(msg.message); } catch { return; }
+  if (s?.kind === 'rip') { latest = { ...s, received: Date.now() }; onChange(latest); }
+  else if (s?.kind === 'helper' || s?.kind === 'trash') {
+    const old = byPc[s.kind][s.pc];
+    if (!old || new Date(s.time) >= new Date(old.time)) { byPc[s.kind][s.pc] = s; onChange(latest); }
+  } else if (s?.kind === 'trashResult') { results[s.req] = s; onChange(latest); }
+}
+
+// Commands for the helpers (<topic>-cmd); each helper acts only on ones naming its PC
+export async function command(obj) {
+  const c = channel(); if (!c) throw new Error('This device isn\'t connected to the helper\'s ntfy topic yet (Jobs > paste the link).');
+  const r = await fetch(c.server, { method: 'POST', body: JSON.stringify({ topic: `${c.topic}-cmd`, message: JSON.stringify(obj), priority: 1 }) });
+  if (!r.ok) throw new Error(`ntfy said ${r.status}`);
+}
+
+// Pretend helpers for ?demo
+export function demoHelpers() {
+  const now = new Date().toISOString(); const GB = 1024 ** 3;
+  byPc.helper['GAMING-PC'] = { kind: 'helper', pc: 'GAMING-PC', version: '0.3.7', time: now, compress: true, paused: false, jobs: [{ title: 'Dune', mode: 'compress', preset: '4kh', percent: 37, secsLeft: 4200, what: 'Encoding' }] };
+  byPc.helper['MEDIA-PC'] = { kind: 'helper', pc: 'MEDIA-PC', version: '0.3.7', time: now, compress: false, paused: false, jobs: [] };
+  byPc.trash['MEDIA-PC'] = { kind: 'trash', pc: 'MEDIA-PC', time: now, total: 251 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-26', drive: 'E:', date: '2026-09-26', bytes: 251 * GB, files: 5, titles: ['Pirates of the Caribbean: The Curse of the Black Pearl (2003)', 'Pirates of the Caribbean: Dead Man\'s Chest (2006)', 'Pirates of the Caribbean: At World\'s End (2007)', 'Pirates of the Caribbean: On Stranger Tides (2011)', 'Pirates of the Caribbean: Dead Men Tell No Tales (2017)'], more: 0 }] };
+  byPc.trash['GAMING-PC'] = { kind: 'trash', pc: 'GAMING-PC', time: now, total: 250 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-12', drive: 'E:', date: '2026-09-12', bytes: 86 * GB, files: 2, titles: ['Harry Potter and the Sorcerer\'s Stone (2001)'], more: 0 }, { path: 'G:\\_TO_DELETE\\2026-09-27', drive: 'G:', date: '2026-09-27', bytes: 164 * GB, files: 2, titles: ['Transformers (2007)', 'Transformers: Age of Extinction (2014)'], more: 0 }] };
+}
+export function demoCommand(obj) {
+  if (obj.cmd === 'pause') { const h = byPc.helper[obj.pc]; if (h) byPc.helper[obj.pc] = { ...h, paused: obj.on, jobs: h.jobs.map((j) => ({ ...j, what: obj.on ? 'paused: paused from the tray or dashboard' : 'Encoding' })) }; }
+  if (obj.cmd === 'emptytrash') setTimeout(() => {
+    const t = byPc.trash[obj.pc]; const gone = t.batches.filter((b) => obj.batches.includes(b.path));
+    byPc.trash[obj.pc] = { ...t, batches: t.batches.filter((b) => !obj.batches.includes(b.path)), total: t.total - gone.reduce((a, b) => a + b.bytes, 0) };
+    results[obj.req] = { kind: 'trashResult', pc: obj.pc, req: obj.req, freed: gone.reduce((a, b) => a + b.bytes, 0), deleted: gone.map((b) => b.path), errors: [] };
+    onChange(latest);
+  }, 2500);
+  onChange(latest);
 }
 
 // Last status from the past two hours, then live updates

@@ -190,6 +190,14 @@ h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color
 .ripauto { display: flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
 .ripin { height: 28px; min-width: 220px; flex: 1; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg); padding: 0 8px; font-size: 12px; }
 
+/* Helpers and _TO_DELETE in Jobs */
+.liverow { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.liverow .fine { display: block; }
+button.stat { text-align: left; cursor: pointer; font: inherit; color: inherit; }
+button.stat:hover { border-color: var(--line-strong); }
+.tbatch { display: flex; gap: 8px; align-items: flex-start; }
+.tbatch input { margin-top: 3px; }
+
 /* Show seasons */
 .seasons { display: grid; gap: 8px; margin-top: 12px; }
 .season { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--card); }

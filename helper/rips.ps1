@@ -201,38 +201,20 @@ function Rip-Step($state, [datetime]$now, [bool]$running, [string[]]$dirs, $disc
 
 $script:Rip = @{ active = $false }
 $script:RipPending = @()        # finished rip files waiting for Plex, to compress
-$script:RipCmdSince = $null
+$script:RipLastStatus = $null
 
 function Rip-On { [bool]($script:Cfg.rip -and $script:Cfg.rip.enabled -and $script:Cfg.notify -and $script:Cfg.notify.topic) }
 function Rip-Topic([string]$kind) { "$($script:Cfg.notify.topic)-$kind" }
 
-# Status goes to <topic>-status at the lowest priority: the dashboard reads it; nobody's phone subscribes
-function Publish-RipStatus($s) {
-    $n = $script:Cfg.notify
-    $body = [ordered]@{ topic = (Rip-Topic 'status'); message = ($s | ConvertTo-Json -Compress -Depth 4); title = 'rip'; priority = 1 }
-    $bytes = [Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Compress))
-    Invoke-RestMethod -Method Post -Uri $n.server.TrimEnd('/') -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15 | Out-Null
-}
-
-# The dashboard's switches for the current rip (<topic>-cmd): {"cmd":"autocompress","id":"<rip id>","on":true}
-function Read-RipCommands {
-    $n = $script:Cfg.notify
-    $since = if ($script:RipCmdSince) { $script:RipCmdSince } else { '10m' }
-    $raw = (Invoke-WebRequest -Uri "$($n.server.TrimEnd('/'))/$(Rip-Topic 'cmd')/json?poll=1&since=$since" -UseBasicParsing -TimeoutSec 15).Content
-    foreach ($line in ($raw -split "`n" | Where-Object { $_.Trim() })) {
-        $m = try { $line | ConvertFrom-Json } catch { $null }
-        if (-not $m -or $m.event -ne 'message') { continue }
-        $script:RipCmdSince = $m.id
-        $c = try { $m.message | ConvertFrom-Json } catch { $null }
-        if ($c -and $c.cmd -eq 'autocompress' -and $c.id -eq $script:Rip.id) { $script:Rip.autoCompress = [bool]$c.on; Log "Rip $($c.id): auto-compress switched $(if ($c.on) { 'on' } else { 'off' }) from the dashboard" }
-        if ($c -and $c.cmd -eq 'autocompress' -and $c.id -eq $script:RipLastId -and -not $script:Rip.active) {
-            # switched on just after the rip finished: still counts
-            if ($c.on) { foreach ($f in $script:RipLastFiles) { if (-not ($script:RipPending | Where-Object { $_.path -eq $f })) { $script:RipPending += [pscustomobject]@{ path = $f; since = (Get-Date).ToString('o'); scanned = $false } } } }
-            else { $script:RipPending = @($script:RipPending | Where-Object { $script:RipLastFiles -notcontains $_.path }) }
-        }
+# The dashboard's switch for a rip (read by live.ps1's Read-Commands): {"cmd":"autocompress","id":"<rip id>","on":true}
+function Handle-RipCommand($c) {
+    if ($c.id -eq $script:Rip.id -and $script:Rip.active) { $script:Rip.autoCompress = [bool]$c.on; Log "Rip $($c.id): auto-compress switched $(if ($c.on) { 'on' } else { 'off' }) from the dashboard"; return }
+    if ($c.id -eq $script:RipLastId) {
+        # switched on just after the rip finished: still counts
+        if ($c.on) { foreach ($f in $script:RipLastFiles) { if (-not ($script:RipPending | Where-Object { $_.path -eq $f })) { $script:RipPending += [pscustomobject]@{ path = $f; since = (Get-Date).ToString('o'); scanned = $false } } } }
+        else { $script:RipPending = @($script:RipPending | Where-Object { $script:RipLastFiles -notcontains $_.path }) }
     }
 }
-
 # Plex library that a file on this PC belongs to: @{ key; type } or $null
 function Library-For([string]$path) {
     foreach ($s in @((Pms GET '/library/sections').MediaContainer.Directory)) {
@@ -275,7 +257,6 @@ function Rip-QueueCompressions {
 # Called every poll by the helper
 function Rip-Poll {
     if (-not (Rip-On)) { return }
-    try { Read-RipCommands } catch { }
     Rip-QueueCompressions
     $running = MakeMkv-Running
     if (-not $running -and -not $script:Rip.active) { return }
@@ -291,7 +272,8 @@ function Rip-Poll {
     }
     if ($s.library -eq 'show') { $s.autoCompress = $false; $script:Rip.autoCompress = $false }
     if ($null -eq $s.autoCompress) { $s.autoCompress = [bool]$script:Cfg.rip.autoCompress }
-    try { Publish-RipStatus $s } catch { Log "Couldn't publish rip progress: $($_.Exception.Message)" 'WARN' }
+    $script:RipLastStatus = $s
+    try { Publish-Live $s } catch { Log "Couldn't publish rip progress: $($_.Exception.Message)" 'WARN' }
     if ($s.state -eq 'done') {
         $files = @($script:Rip.done)
         $script:RipLastId = $s.id; $script:RipLastFiles = $files

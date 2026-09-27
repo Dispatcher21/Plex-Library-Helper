@@ -282,14 +282,18 @@ try {
     # 20. Rip channel: the dashboard link and the auto-compress switch coming back from ntfy
     $DashboardUrl = 'https://example.test/'
     $script:Cfg = [pscustomobject]@{ notify = [pscustomobject]@{ enabled = $true; server = 'https://ntfy.sh'; topic = 'pld-abc' }; rip = [pscustomobject]@{ enabled = $true } }
+$JobsDir = Join-Path $root 'live-jobs'
+    . (Join-Path $PSScriptRoot 'live.ps1')
+    $DashboardUrl = 'https://example.test/'
     Check 'rip: dashboard link carries the topic after #' ((Dashboard-Link) -eq 'https://example.test/#ntfy=pld-abc')
     $script:Rip = @{ active = $true; id = 'r1' }; $script:RipCmdSince = $null
     function Invoke-WebRequest { param($Uri) $script:AskedUri = $Uri; [pscustomobject]@{ Content = (@(
         '{"id":"a1","event":"open"}',
         ('{"id":"a2","event":"message","message":' + ('{"cmd":"autocompress","id":"old","on":true}' | ConvertTo-Json) + '}'),
         ('{"id":"a3","event":"message","message":' + ('{"cmd":"autocompress","id":"r1","on":true}' | ConvertTo-Json) + '}')) -join "`n") } }
-    Read-RipCommands
-    Check 'rip: switch for this rip applied, others ignored, position remembered' ($script:Rip.autoCompress -eq $true -and $script:RipCmdSince -eq 'a3' -and $script:AskedUri -eq 'https://ntfy.sh/pld-abc-cmd/json?poll=1&since=10m')
+    $JobsDir = Join-Path $root 'live-jobs'; $PauseFile = Join-Path $JobsDir 'PAUSED'; $script:LiveStarted = (Get-Date).AddMinutes(-1); $script:CmdSince = $null
+    Read-Commands
+    Check 'rip: switch for this rip applied, others ignored, position remembered' ($script:Rip.autoCompress -eq $true -and $script:CmdSince -eq 'a3' -and $script:AskedUri -eq 'https://ntfy.sh/pld-abc-cmd/json?poll=1&since=10m')
     Remove-Item Function:\Invoke-WebRequest
 
     # 21. ntfy reachability explained in plain words (a VPN blocked it on the owner's PC)
@@ -302,6 +306,38 @@ try {
     Remove-Item Function:\Invoke-WebRequest, Function:\Get-NetAdapter
     $mk = Read-MakeMkvInfo @('Source :', 'BD-RE', 'Source size :', '76763.2 M', 'Read rate :', '17.6 M/s', 'Output file :', 'G:/PLEX/MOVIES/HP/HP_t00.mkv', 'Output size :', '1700.2 M')
     Check "MakeMKV window: output file and source size read" ($mk.OutputFile -eq 'G:\PLEX\MOVIES\HP\HP_t00.mkv' -and $mk.SourceBytes -eq [long](76763.2 * 1MB))
+
+    # 22. Pause switch and emptying _TO_DELETE from the dashboard
+    $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    # (not called Cmd: PowerShell ignores case, so that would hijack every later 'cmd /c')
+    function Ntfy-Msg($id, $obj, $age = 0) { '{"id":"' + $id + '","event":"message","time":' + ($now - $age) + ',"message":' + (($obj | ConvertTo-Json -Compress) | ConvertTo-Json) + '}' }
+    function Serve($lines) { $script:Served = $lines -join "`n" }
+    function Invoke-WebRequest { [pscustomobject]@{ Content = $script:Served } }
+    function Publish-Live($o) { $script:Published += , $o }
+    function Send-Ntfy { }
+    $script:Published = @(); $script:CmdSince = $null
+    Serve @((Ntfy-Msg 'p1' @{ cmd = 'pause'; pc = $env:COMPUTERNAME; on = $true }), (Ntfy-Msg 'p2' @{ cmd = 'pause'; pc = 'OTHER-PC'; on = $false }))
+    Read-Commands
+    Check 'pause from the dashboard: this PC paused, other PC''s command ignored' (Is-Paused)
+    Serve @(Ntfy-Msg 'p3' @{ cmd = 'pause'; pc = $env:COMPUTERNAME; on = $false }); Read-Commands
+    Check 'resume from the dashboard' (-not (Is-Paused))
+    $trash2 = Join-Path $root 'live-trash\_TO_DELETE'; $script:TestDrive = Join-Path $root 'live-trash\'
+    MakeFile "$trash2\2020-03-03\Movies\A.mkv" 2 | Out-Null; MakeFile "$trash2\2020-04-04\Movies\B.mkv" 3 | Out-Null
+    function Trash-Roots { @($trash2) }
+    $sum = Trash-Summary
+    Check 'trash summary: batches with sizes, for the dashboard' ($sum.kind -eq 'trash' -and $sum.batches.Count -eq 2 -and $sum.total -eq 5MB)
+    $b3 = "$trash2\2020-03-03"; $outside = Join-Path $root 'outside-trash'; MakeFile "$outside\keep.mkv" 1 | Out-Null
+    Serve @((Ntfy-Msg 'e1' @{ cmd = 'emptytrash'; pc = $env:COMPUTERNAME; req = 'old1'; batches = @($b3) } 1200))
+    Read-Commands
+    Check 'empty: a request older than 10 minutes is ignored' (Test-Path $b3)
+    Serve @((Ntfy-Msg 'e2' @{ cmd = 'emptytrash'; pc = $env:COMPUTERNAME; req = 'r1'; batches = @($b3, $outside) }))
+    Read-Commands
+    Check 'empty: the reported batch is deleted, a path it never reported is not' ((-not (Test-Path $b3)) -and (Test-Path "$outside\keep.mkv") -and ($script:Published | Where-Object { $_.kind -eq 'trashResult' -and $_.freed -eq 2MB }))
+    MakeFile "$b3\Movies\A2.mkv" 1 | Out-Null
+    $script:CmdSince = $null; Read-Commands
+    Check 'empty: the same request never runs twice (ntfy keeps old messages)' (Test-Path $b3)
+    Remove-Item Function:\Invoke-WebRequest, Function:\Publish-Live, Function:\Send-Ntfy, Function:\Trash-Roots
+    $script:TestDrive = $drive
 
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }

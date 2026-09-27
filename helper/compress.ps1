@@ -246,6 +246,8 @@ function Plex-Activity {
 
 # Returns why the encode should be paused right now, or '' to run
 function Pause-Reason($rules) {
+    # the tray's and dashboard's 'Pause all compressions' (jobs\PAUSED next to the job file)
+    if ($script:PauseFile -and (Test-Path -LiteralPath $script:PauseFile)) { return 'paused from the tray or dashboard' }
     if ($rules.night -and -not (In-Window $script:NightWindow (Get-Date))) { return "waiting for the overnight window ($($script:NightWindow))" }
     if ($rules.idle -and [PldWin]::IdleSeconds() -lt $IdleMinutes * 60) { return 'the PC is in use' }
     if ($rules.game -and [PldWin]::FullScreenAppInFront()) { return 'a full-screen game or video is running' }
@@ -281,7 +283,7 @@ function Run-Encode([string[]]$argList, [string]$progressPath, [double]$duration
                 elseif ($paused) {
                     # resume only after the reason has been gone for 30 s, so a short break doesn't flap
                     if (-not $clearSince) { $clearSince = Get-Date }
-                    elseif (((Get-Date) - $clearSince).TotalSeconds -ge 30) { [PldWin]::NtResumeProcess($p.Handle) | Out-Null; $script:LastPausedSecs += ((Get-Date) - $pausedAt).TotalSeconds; Wlog "Resumed (was: $paused)"; $paused = ''; $clearSince = $null }
+                    elseif (((Get-Date) - $clearSince).TotalSeconds -ge 30 -or $paused -like 'paused from the tray*') { [PldWin]::NtResumeProcess($p.Handle) | Out-Null; $script:LastPausedSecs += ((Get-Date) - $pausedAt).TotalSeconds; Wlog "Resumed (was: $paused)"; $paused = ''; $clearSince = $null }
                 }
             }
             $prog = Read-Progress $progressPath
@@ -586,6 +588,7 @@ $job = Get-Content -LiteralPath $JobFile -Raw | ConvertFrom-Json
 $base = [IO.Path]::ChangeExtension($JobFile, $null).TrimEnd('.')
 $script:StatusFile = "$base.status.json"
 $script:CancelFile = "$base.cancel"
+$script:PauseFile = Join-Path ([IO.Path]::GetDirectoryName($JobFile)) 'PAUSED'
 $script:LogFile = "$base.log"
 $script:Tools = $job.tools
 $script:NightWindow = $(if ($job.nightWindow) { $job.nightWindow } else { '23:00-07:00' })

@@ -36,6 +36,16 @@ Plex sign-in and settings (no sign-in needed), and switches Windows startup to t
 can delete the old one. If the old copy is in the middle of a compression, setup says so and changes
 nothing, so the encode isn't left running unattended: let it finish or Stop it in the dashboard first.
 
+## The tray icon
+
+The helper puts an icon in the Windows notification area (the ^ next to the clock): orange when idle,
+green while compressing or ripping, grey when paused, red if the helper isn't running. Hover for what it's
+doing; double-click to open the dashboard; right-click for **Pause all compressions / Resume**, Status,
+the log folder, Empty _TO_DELETE, Run setup again, Restart helper and Quit.
+
+**Pause all compressions** (tray or dashboard > Jobs) freezes a running encode where it is and holds the
+queue until you resume; nothing is lost.
+
 ## Double-click these
 
 | File | What it does |
@@ -132,7 +142,13 @@ the PC that owns the drive (quarantined files stay on their own drive, so run it
 every batch by drive and date with its size and the movies in it, then asks: **A** all, **O** only
 batches older than 7 days, or **N** nothing; deleting also needs you to type `DELETE`. It only removes
 the dated folders inside `_TO_DELETE`, skips anything containing a link to another folder, and records
-each deletion in `manifest.jsonl`. This can't be done from the dashboard, on purpose.
+each deletion in `manifest.jsonl`. The tray menu opens the same window.
+
+**From the dashboard:** Jobs lists what's waiting in `_TO_DELETE` on each connected PC, with **Empty…**
+(choose batches, type `DELETE`). The helper on that PC deletes only the dated batches it reported, only
+for a request less than 10 minutes old that it hasn't carried out before, and your phone gets a note of
+what was freed. A PC appears there once its helper is connected to the dashboard's ntfy topic: setup
+asks (on a PC without its own notifications, paste the topic from your main PC).
 
 ## Putting something back
 
