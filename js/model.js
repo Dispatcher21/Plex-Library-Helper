@@ -87,7 +87,9 @@ export function normalizeEpisodes(episodes, shows, server, section) {
       showRatingKey: String(e.grandparentRatingKey), showUnmatched: s.guid ? isUnmatched(s.guid, s.Guid) : false,
       showTitle: e.grandparentTitle, showYear: s.year || null, showThumb: s.thumb || e.grandparentThumb || null,
       serverId: server.id, section: section.title, season: e.parentIndex ?? 0, ep: e.index ?? 0, title: e.title,
-      addedAt: e.addedAt || 0, versions: versionsOf(e, server, section),
+      sectionId: String(section?.key ?? ''), addedAt: e.addedAt || 0,
+      // each copy remembers its show's Plex entry: show jobs are labels on the show (episodes have no labels)
+      versions: versionsOf(e, server, section).map((v) => ({ ...v, showRatingKey: String(e.grandparentRatingKey), epCode: `S${String(e.parentIndex ?? 0).padStart(2, '0')}E${String(e.index ?? 0).padStart(2, '0')}` })),
     };
   });
 }
@@ -145,7 +147,7 @@ export function buildShows(records) {
     let s = map.get(r.showKey);
     if (!s) { s = { kind: 'show', k: r.showKey, title: r.showTitle, year: r.showYear, thumb: r.showThumb, thumbServer: r.serverId, addedAt: 0, eps: new Map(), items: [], unmatched: false }; map.set(r.showKey, s); }
     if (!s.thumb && r.showThumb) { s.thumb = r.showThumb; s.thumbServer = r.serverId; }
-    if (r.showRatingKey && !s.items.some((i) => i.serverId === r.serverId && i.ratingKey === r.showRatingKey)) s.items.push({ serverId: r.serverId, ratingKey: r.showRatingKey, sectionId: '', unmatched: !!r.showUnmatched });
+    if (r.showRatingKey && !s.items.some((i) => i.serverId === r.serverId && i.ratingKey === r.showRatingKey)) s.items.push({ serverId: r.serverId, ratingKey: r.showRatingKey, sectionId: r.sectionId || '', unmatched: !!r.showUnmatched });
     s.unmatched ||= !!r.showUnmatched;
     s.addedAt = Math.max(s.addedAt, r.addedAt);
     const ek = `${r.season}x${r.ep}`;

@@ -198,16 +198,17 @@ export class ServerApi {
   // ----- labels (the job mailbox; see helper/library-helper.ps1) -----
   async put(path, params) { await getJson(this.url(path, params), { method: 'PUT', timeout: 30000 }); }
   sectionLabels(key) { return this.get(`/library/sections/${key}/label`).then((mc) => mc.Directory || []); }
-  itemsWithLabel(key, labelKey) { return this.get(`/library/sections/${key}/all`, { type: 1, label: labelKey }).then((mc) => mc.Metadata || []); }
+  // type 1 = movies, 2 = shows (show jobs live on the show)
+  itemsWithLabel(key, labelKey, type = 1) { return this.get(`/library/sections/${key}/all`, { type, label: labelKey }).then((mc) => mc.Metadata || []); }
   async itemLabels(ratingKey) { return ((await this.metadata(ratingKey))?.Label || []).map((l) => l.tag); }
-  async addLabel(sectionId, ratingKey, tag) {
+  async addLabel(sectionId, ratingKey, tag, type = 1) {
     const keep = (await this.itemLabels(ratingKey)).filter((t) => t !== tag);
-    const params = { type: 1, id: ratingKey, 'label.locked': 1 };
+    const params = { type, id: ratingKey, 'label.locked': 1 };
     [...keep, tag].forEach((t, i) => { params[`label[${i}].tag.tag`] = t; });
     await this.put(`/library/sections/${sectionId}/all`, params);
   }
-  removeLabel(sectionId, ratingKey, tag) {
-    return this.put(`/library/sections/${sectionId}/all`, { type: 1, id: ratingKey, 'label[].tag.tag-': tag });
+  removeLabel(sectionId, ratingKey, tag, type = 1) {
+    return this.put(`/library/sections/${sectionId}/all`, { type, id: ratingKey, 'label[].tag.tag-': tag });
   }
 
   poster(thumb, w = 240) {

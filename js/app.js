@@ -465,6 +465,13 @@ function renderJobsButton() {
 }
 
 function jobDescription(j) {
+  if (j.show) {
+    const o = jobsApi.showJobInfo(j);
+    const what = `Quarantine ${scopeText(o.scope)}`;
+    const where = `show · ${o.ids.length || o.n} episode cop${(o.ids.length || o.n) === 1 ? 'y' : 'ies'}`;
+    const info = j.state === 'done' ? `moved ${o.moved} (${fmtSize(o.bytes)}) to _TO_DELETE${o.failed ? `, ${o.failed} left in place: ${o.problem}` : ''}`: j.state === 'fail' ? j.info : '';
+    return { what, where, info, percent: null };
+  }
   const v = findVersion(j);
   const where = v ? `${v.res} · ${fmtSize(v.size)} · ${v.machine} · ${v.drive}` : `copy ${j.mediaId}`;
   if (j.kind === 'compress') {
@@ -520,7 +527,7 @@ function actionFor(v, e, versions) {
 
 let pending = null;
 function confirmQuarantine(e, versions) {
-  pending = { e, versions };
+  pending = { e, versions }; pendingShow = null;
   const all = survivors(e, versions).length === 0;
   $('confirm-body').innerHTML = `<div class="db" style="padding-top:18px">
     <h2 style="margin:0 0 4px">Quarantine ${versions.length === 1 ? 'this copy' : `${versions.length} copies`} of ${esc(e.title)}?</h2>
@@ -561,24 +568,123 @@ function missingText(nums) {
   return out.join(', ');
 }
 
+// ---------- Show jobs (labels on the show; see jobs.queueShowQuarantine) ----------
+
+const seasonName = (n) => (Number(n) === 0 ? 'Specials' : `Season ${Number(n)}`);
+const epCode = (ep) => `S${String(ep.season).padStart(2, '0')}E${String(ep.ep).padStart(2, '0')}`;
+function scopeText(scope) {
+  const m = /^(dupes-)?(all|S(\d+)(E\d+)?)$/.exec(scope || '');
+  if (!m) return scope || '';
+  const what = m[2] === 'all' ? 'whole show' : m[4] ? m[2] : seasonName(m[3]);
+  return m[1] ? `duplicates · ${what}` : what;
+}
+
+function jobsForShow(s) {
+  const keys = new Set(s.items.map(itemKey));
+  return state.jobs.filter((j) => j.show && keys.has(`${j.serverId}|${j.ratingKey}`)).sort((a, b) => b.created - a.created);
+}
+// Episode copies already in an active show job, so they can't be queued twice
+function busyIds(s) { return new Set(jobsForShow(s).filter((j) => ACTIVE.includes(j.state)).flatMap((j) => jobsApi.showJobInfo(j).ids)); }
+
+// Copies to quarantine for "keep the best copy of each episode": everything below the best, except
+// compressed copies (made on purpose) and copies already in a job
+function dupeTargets(s, eps) {
+  const busy = busyIds(s);
+  return eps.filter((ep) => ep.dupes).flatMap((ep) => ep.versions.slice(1).filter((v) => !v.missing && !v.compressed && !busy.has(String(v.mediaId))));
+}
+function allTargets(s, eps) { const busy = busyIds(s); return eps.flatMap((ep) => ep.versions.filter((v) => !busy.has(String(v.mediaId)))); }
+
+function showJobsHtml(s) {
+  const jobs = jobsForShow(s).slice(0, 6);
+  if (!jobs.length) return '';
+  return `<div class="showjobs">${jobs.map((j) => {
+    const d = jobDescription(j);
+    return `<div class="cstat"><span class="pill ${j.state === 'stop' ? 'queued' : j.state}">${jobsApi.STATES[j.state] || esc(j.state)}</span> ${esc(d.what)}${d.info ? ` · ${esc(d.info)}` : ''}</div>`;
+  }).join('')}</div>`;
+}
+
+function seasonHtml(s, se) {
+  const eps = se.eps;
+  const dupes = dupeTargets(s, eps);
+  const locs = se.locs.map((id) => esc(locName(state.locations.find((l) => l.id === id) || { machine: '?', drive: id }))).join(', ');
+  return `<div class="season">
+    <div class="shead"><b>${seasonName(se.season)}</b><span>${eps.length} ep${eps.length === 1 ? '' : 's'} · ${fmtSize(se.size)} · ${Object.entries(se.res).map(([r, n]) => `${esc(r)} ×${n}`).join(', ')}</span></div>
+    <div class="sfacts">${locs}${se.dupes ? ` · <span class="b dup">${se.dupes} duplicated</span>` : ''}${se.missing.length ? ` · <span class="b sd" title="Episodes missing between ones you have">missing ${esc(missingText(se.missing))}</span>` : ''}</div>
+    <div class="actions">
+      ${dupes.length ? `<button class="btn small" data-sdupes="${se.season}">Keep best, quarantine ${dupes.length} duplicate${dupes.length === 1 ? '' : 's'} (${fmtSize(dupes.reduce((a, v) => a + v.size, 0))})</button>` : ''}
+      <button class="btn small danger" data-sq="${se.season}">Quarantine ${seasonName(se.season).toLowerCase()}…</button>
+    </div>
+  </div>`;
+}
+
 function showDetail(s) {
-  const rows = s.seasons.map((se) => `<tr>
-    <td>${se.season === 0 ? 'Specials' : `Season ${se.season}`}</td>
-    <td class="n">${se.eps.length}</td>
-    <td class="n">${fmtSize(se.size)}</td>
-    <td class="hide-sm">${Object.entries(se.res).map(([r, n]) => `${esc(r)} ×${n}`).join(', ')}</td>
-    <td class="hide-sm">${se.locs.map((id) => esc(locName(state.locations.find((l) => l.id === id) || { machine: '?', drive: id }))).join('<br>')}</td>
-    <td class="n">${se.dupes ? `<span class="b dup">${se.dupes}</span>` : '—'}</td>
-    <td>${se.missing.length ? `<span class="b sd" title="Episodes missing between ones you have">${esc(missingText(se.missing))}</span>` : '—'}</td></tr>`).join('');
-  const dupeEps = s.seasons.flatMap((se) => se.eps.filter((ep) => ep.dupes));
+  const allEps = s.seasons.flatMap((se) => se.eps);
+  const dupeEps = allEps.filter((ep) => ep.dupes);
+  const allDupes = dupeTargets(s, allEps);
   const gapNote = s.missingSeasons.length || s.missingEps ? `<p class="note">${s.missingSeasons.length ? `<b>Missing ${s.missingSeasons.length === 1 ? 'season' : 'seasons'} ${s.missingSeasons.join(', ')}</b>. ` : ''}Missing episodes are gaps between episodes you have; the last episodes of a season can't be checked.</p>` : '';
   return `<div class="db">
     ${gapNote}
-    <table class="seasons"><thead><tr><th>Season</th><th class="n">Eps</th><th class="n">Size</th><th class="hide-sm">Quality</th><th class="hide-sm">Drive</th><th class="n">Dupes</th><th>Missing</th></tr></thead><tbody>${rows}</tbody></table>
+    ${showJobsHtml(s)}
+    <div class="actions">
+      ${allDupes.length ? `<button class="btn small" data-sdupes="all">Keep best of every episode: quarantine ${allDupes.length} duplicate${allDupes.length === 1 ? '' : 's'} (${fmtSize(allDupes.reduce((a, v) => a + v.size, 0))})</button>` : ''}
+      <button class="btn small danger" data-sq="all">Quarantine whole show…</button>
+    </div>
+    <div class="seasons">${s.seasons.map((se) => seasonHtml(s, se)).join('')}</div>
     ${dupeEps.length ? `<details class="dupeps"><summary>${dupeEps.length} duplicated episode${dupeEps.length === 1 ? '' : 's'} · ${fmtSize(s.extra)} extra</summary>
-      ${dupeEps.map((ep) => `<h4>S${String(ep.season).padStart(2, '0')}E${String(ep.ep).padStart(2, '0')} · ${esc(ep.title)}</h4>${ep.versions.map((v, i) => versionHtml(v, ep, i)).join('')}`).join('')}
+      ${dupeEps.map((ep) => {
+        const t = dupeTargets(s, [ep]);
+        return `<h4>${epCode(ep)} · ${esc(ep.title)}${t.length ? ` <button class="btn small" data-edupe="${esc(ep.season)}x${esc(ep.ep)}">Keep best, quarantine ${t.length === 1 ? 'the other' : `the other ${t.length}`}</button>` : ''}</h4>${ep.versions.map((v, i) => versionHtml(v, ep, i)).join('')}`;
+      }).join('')}
     </details>` : ''}
+    <p class="note">Quarantine moves episode files into <code>_TO_DELETE</code> on their own drive, done by the Library Helper on that PC (it needs version 0.3.4 or newer for shows). Nothing is deleted. "Keep best" keeps each episode's highest-quality copy, and the helper double-checks that copy still exists first.</p>
   </div>`;
+}
+
+// Confirm, then queue: copies grouped by the show entry they belong to (a show can be on two servers)
+let pendingShow = null;
+function confirmShowQuarantine(s, versions, action, scope) {
+  if (!versions.length) return;
+  if (versions.some((v) => !v.showRatingKey)) { alert('Rescan first: this list was loaded before the dashboard knew which show each episode belongs to.'); return; }
+  pendingShow = { s, versions, action, scope };
+  const byLoc = new Map(); for (const v of versions) byLoc.set(v.loc, (byLoc.get(v.loc) || 0) + 1);
+  const total = versions.reduce((a, v) => a + v.size, 0);
+  const eps = new Map(); for (const v of versions) eps.set(v.epCode, (eps.get(v.epCode) || 0) + 1);
+  const codes = [...eps.keys()].sort();
+  const dupes = action === 'qm';
+  const whole = scope === 'all';
+  $('confirm-body').innerHTML = `<div class="db" style="padding-top:18px">
+    <h2 style="margin:0 0 4px">${dupes ? `Quarantine ${versions.length} duplicate cop${versions.length === 1 ? 'y' : 'ies'} of` : whole ? 'Quarantine all of' : `Quarantine ${seasonName(scope.slice(1)).toLowerCase()} of`} ${esc(s.title)}?</h2>
+    <p class="fine">The Library Helper on each PC moves these files into <code>_TO_DELETE</code> on the same drive. Nothing is deleted. ${dupes ? 'For every episode it first checks that the copy being kept still exists; if not, that episode is left alone.' : ''}</p>
+    <ul><li><b>${versions.length} episode file${versions.length === 1 ? '' : 's'} · ${fmtSize(total)}</b>${[...byLoc].map(([loc, n]) => { const l = state.locations.find((x) => x.id === loc); return `<code>${esc(l ? locName(l) : loc)}: ${n}</code>`; }).join('')}
+      <code>${esc(codes.slice(0, 30).join(', '))}${codes.length > 30 ? `, and ${codes.length - 30} more` : ''}</code></li></ul>
+    ${dupes ? '' : `<p class="warn">${whole ? `${esc(s.title)} will disappear from Plex` : `${seasonName(scope.slice(1))} will disappear from Plex`} until you put the files back. Emptying <code>_TO_DELETE</code> later deletes them for good.</p>`}
+    <p>Frees <b>${fmtSize(total)}</b> once you empty <code>_TO_DELETE</code>.</p>
+    <p id="confirm-error" class="error" hidden></p>
+    <div class="foot"><button class="btn ghost" data-close>Cancel</button><button class="btn danger solid" data-go>Quarantine ${versions.length} file${versions.length === 1 ? '' : 's'}</button></div></div>`;
+  $('confirm').showModal();
+}
+
+async function runShowQuarantine() {
+  const { s, versions, action, scope } = pendingShow || {}; if (!versions) return;
+  const go = $('confirm-body').querySelector('[data-go]'); go.disabled = true; go.textContent = 'Sending…';
+  const byItem = new Map();
+  for (const v of versions) { const k = `${v.serverId}|${v.showRatingKey}`; if (!byItem.has(k)) byItem.set(k, []); byItem.get(k).push(v); }
+  const errors = [];
+  for (const [k, vs] of byItem) {
+    const item = s.items.find((i) => itemKey(i) === k) || { serverId: vs[0].serverId, ratingKey: vs[0].showRatingKey, sectionId: vs[0].sectionId };
+    const show = { ...item, sectionId: item.sectionId || vs[0].sectionId, title: s.title, year: s.year };
+    try {
+      if (state.demo) state.demoJobs.queueShow(show, vs, action, scope);
+      else {
+        const api = state.servers[show.serverId]?.api;
+        if (!api) throw new Error(`${state.servers[show.serverId]?.name || 'That server'} isn't connected right now.`);
+        await jobsApi.queueShowQuarantine(api, show, vs, action, scope);
+      }
+    } catch (err) { errors.push(err.message); }
+  }
+  if (errors.length) { const el = $('confirm-error'); el.textContent = `Couldn't send: ${errors.join(' · ')}`; el.hidden = false; go.disabled = false; go.textContent = 'Try again'; return; }
+  $('confirm').close(); pendingShow = null;
+  await refreshJobs();
 }
 
 let openEntry = null;
@@ -870,8 +976,8 @@ function bind() {
   };
   $('jobs-btn').onclick = () => { renderJobs(); $('jobs').showModal(); refreshJobs(); };
   $('confirm').onclick = (ev) => {
-    if (ev.target === $('confirm') || ev.target.closest('[data-close]')) { $('confirm').close(); pending = null; return; }
-    if (ev.target.closest('[data-go]')) runQuarantine();
+    if (ev.target === $('confirm') || ev.target.closest('[data-close]')) { $('confirm').close(); pending = null; pendingShow = null; return; }
+    if (ev.target.closest('[data-go]')) { if (pendingShow) runShowQuarantine(); else runQuarantine(); }
   };
   $('match').onclick = (ev) => {
     if (ev.target === $('match') || ev.target.closest('[data-close]')) { $('match').close(); return; }
@@ -930,6 +1036,23 @@ function bind() {
     if (ev.target.closest('[data-fixmatch]') && openEntry) { openMatch(openEntry); return; }
     const q = ev.target.closest('[data-q]');
     if (q && openEntry?.kind === 'movie') { confirmQuarantine(openEntry, [openEntry.versions[+q.dataset.q]]); return; }
+    // Shows: clean up duplicates / quarantine a season or the whole show
+    if (openEntry?.kind === 'show') {
+      const s = openEntry;
+      const eps = (sel) => (sel === 'all' ? s.seasons : s.seasons.filter((se) => String(se.season) === sel)).flatMap((se) => se.eps);
+      const scopeOf = (sel) => (sel === 'all' ? 'all' : `S${String(sel).padStart(2, '0')}`);
+      const sd = ev.target.closest('[data-sdupes]');
+      if (sd) { confirmShowQuarantine(s, dupeTargets(s, eps(sd.dataset.sdupes)), 'qm', `dupes-${scopeOf(sd.dataset.sdupes)}`); return; }
+      const sq = ev.target.closest('[data-sq]');
+      if (sq) { confirmShowQuarantine(s, allTargets(s, eps(sq.dataset.sq)), 'qma', scopeOf(sq.dataset.sq)); return; }
+      const ed = ev.target.closest('[data-edupe]');
+      if (ed) {
+        const [sn, en] = ed.dataset.edupe.split('x').map(Number);
+        const ep = s.seasons.flatMap((se) => se.eps).find((x) => x.season === sn && x.ep === en);
+        if (ep) confirmShowQuarantine(s, dupeTargets(s, [ep]), 'qm', `dupes-${epCode(ep)}`);
+        return;
+      }
+    }
     const cb = ev.target.closest('[data-compress]');
     if (cb && openEntry?.kind === 'movie') { openCompress(openEntry, openEntry.versions[+cb.dataset.compress]); return; }
     const rp = ev.target.closest('[data-replace]');

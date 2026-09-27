@@ -181,6 +181,17 @@ h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color
 .cest { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--hdr-bg); color: var(--fg); font-size: 13px; }
 .cest.error { background: var(--dup-bg); }
 
+/* Show seasons */
+.seasons { display: grid; gap: 8px; margin-top: 12px; }
+.season { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--card); }
+.season .shead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.season .shead span, .season .sfacts { color: var(--fg2); font-size: 12px; }
+.season .sfacts { margin-top: 3px; overflow-wrap: anywhere; }
+.season .actions { margin-top: 8px; }
+.showjobs { display: grid; gap: 6px; margin-top: 8px; }
+.showjobs .cstat { margin-top: 0; }
+details.dupeps h4 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0 0; }
+
 /* Finished-job messages */
 .notifyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
 #toasts { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 50; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }

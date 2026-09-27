@@ -49,28 +49,55 @@ export async function queueCompress(api, v, action, options) {
   return parse(tag);
 }
 
+// Show jobs: labels on the show, listing episode copies (media ids). One label per drive, so one helper
+// does each, and at most IDS_PER_LABEL copies per label (Plex keeps 600+ character labels intact).
+// action 'qm' = clean-up, the helper keeps each episode's last copy; 'qma' = remove these on purpose.
+const IDS_PER_LABEL = 40;
+export async function queueShowQuarantine(api, show, versions, action, scope) {
+  const byLoc = new Map();
+  for (const v of versions) { if (!byLoc.has(v.loc)) byLoc.set(v.loc, []); byLoc.get(v.loc).push(v); }
+  const queued = [];
+  for (const group of byLoc.values()) {
+    for (let i = 0; i < group.length; i += IDS_PER_LABEL) {
+      const chunk = group.slice(i, i + IDS_PER_LABEL);
+      const tag = `${PREFIX}${newId()}:${action}:sh${show.ratingKey}:queued:ids=${chunk.map((v) => v.mediaId).join('+')};n=${chunk.length};s=${scope}`;
+      await api.addLabel(show.sectionId, show.ratingKey, tag, 2);
+      queued.push(parse(tag));
+    }
+  }
+  return queued;
+}
+
 // Ask the helper to stop a running compression: same job, state "stop" (new label first, then remove the old)
 export async function stopJob(api, job) {
   const tag = `${job.prefix}${job.id}:${job.action}:${job.mediaId}:stop`;
-  await api.addLabel(job.sectionId, job.ratingKey, tag);
-  await api.removeLabel(job.sectionId, job.ratingKey, job.tag);
+  await api.addLabel(job.sectionId, job.ratingKey, tag, job.type);
+  await api.removeLabel(job.sectionId, job.ratingKey, job.tag, job.type);
 }
 
 export async function fetchJobs(api, serverId) {
   const jobs = [];
-  const sections = (await api.sections()).filter((s) => s.type === 'movie');
+  const sections = (await api.sections()).filter((s) => s.type === 'movie' || s.type === 'show');
   for (const s of sections) {
+    const type = s.type === 'show' ? 2 : 1;
     const labels = (await api.sectionLabels(s.key)).filter((l) => parse(l.title));
     for (const l of labels) {
       const j = parse(l.title); if (!j) continue;
-      const items = await api.itemsWithLabel(s.key, l.key);
-      for (const it of items) jobs.push({ ...j, serverId, sectionId: String(s.key), ratingKey: String(it.ratingKey), title: it.title, year: it.year });
+      const items = await api.itemsWithLabel(s.key, l.key, type);
+      for (const it of items) jobs.push({ ...j, serverId, sectionId: String(s.key), type, show: type === 2, ratingKey: String(it.ratingKey), title: it.title, year: it.year });
     }
   }
   return jobs;
 }
 
-export function removeJob(api, job) { return api.removeLabel(job.sectionId, job.ratingKey, job.tag); }
+export function removeJob(api, job) { return api.removeLabel(job.sectionId, job.ratingKey, job.tag, job.type); }
+
+// What a show job covers, from its label: { ids, n, scope } and, when done, { bytes, moved, failed, problem }
+export function showJobInfo(j) {
+  const o = {};
+  for (const kv of String(j.info || '').split(';')) { const m = /^\s*(\w+)=(.*)$/.exec(kv); if (m) o[m[1]] = m[2]; }
+  return { ids: (o.ids || '').split('+').filter(Boolean), n: Number(o.n) || 0, scope: o.s || '', bytes: Number(o.b) || 0, moved: Number(o.n) || 0, failed: Number(o.f) || 0, problem: o.x || '' };
+}
 
 // ---------- Demo transport (no Plex; jobs advance on timers) ----------
 
@@ -106,6 +133,20 @@ export class DemoJobs {
       setTimeout(() => j.state === 'run' && this.set(j, 'done', `b=${Math.round(guess.bytes)};dv=${o.p?.startsWith('4k') ? 1 : 0};p=${o.p};s=${v.size}`), 2000 + steps.length * 2500);
     }
     return j;
+  }
+  // Pretend show quarantine: one job per drive, like the real thing
+  queueShow(show, versions, action, scope) {
+    const byLoc = new Map();
+    for (const v of versions) { if (!byLoc.has(v.loc)) byLoc.set(v.loc, []); byLoc.get(v.loc).push(v); }
+    const made = [];
+    for (const group of byLoc.values()) {
+      const j = { ...parse(`${PREFIX}${newId()}:${action}:sh${show.ratingKey}:queued:ids=${group.map((v) => v.mediaId).join('+')};n=${group.length};s=${scope}`), serverId: show.serverId, sectionId: '2', type: 2, show: true, ratingKey: show.ratingKey, title: show.title, year: show.year };
+      this.jobs.push(j); made.push(j);
+      setTimeout(() => this.set(j, 'run', ''), 2000);
+      setTimeout(() => this.set(j, 'done', `b=${group.reduce((a, v) => a + v.size, 0)};f=0;n=${group.length};s=${scope}`), 4500);
+    }
+    this.onChange(made[0]);
+    return made;
   }
   stop(job) { this.set(job, 'stop', ''); setTimeout(() => this.set(job, 'fail', 'Stopped from the dashboard'), 1500); }
   remove(job) { this.jobs = this.jobs.filter((j) => j !== job && j.id !== job.id); this.onChange(null); }
