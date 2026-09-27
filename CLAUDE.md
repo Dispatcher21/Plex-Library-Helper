@@ -163,13 +163,13 @@ they never see show jobs: the Beelink's helper must be updated before show quara
 - Dashboard: season cards (Compress…, Replace N originals with compressed, Keep best, Quarantine…),
   show-wide versions, missing-episode gaps (`missingText`), job progress on the show.
 
-### MakeMKV rip progress (helper 0.3.5, `helper/rips.ps1`, `js/rips.js`)
+### MakeMKV rip progress (helper 0.3.5-0.3.6; **this PC routes everything through a Surfshark WireGuard VPN, which breaks TLS to ntfy.sh**: needs ntfy.sh in Surfshark Bypasser. `Test-Ntfy` explains this in setup/status. A new rip folder is not in MakeMKV's MRU until the rip ends: use the window's output file, `helper/rips.ps1`, `js/rips.js`)
 
 Owner chose: watch normal MakeMKV GUI rips (no helper-driven ripping), movies and TV, ntfy as the channel,
 optional auto-compress. Watcher runs every poll (`Rip-Poll`): MakeMKV running → `.mkv` files growing
 in MakeMKV's destinations (`HKCU:\Software\MakeMKV` `path_DestDirMRU` + `app_DestinationDir`; also holds
 the licence key: never print it) → status. Progress: MakeMKV's Qt progress bars via UI Automation
-(`MakeMkv-Progress`, **untested on a real rip**) else file size vs disc titles (`Get-DiscTitles`: MPLS
+(`MakeMkv-Progress`: **works** on MakeMKV 1.17.7: bars plus label/value texts, incl. "Output file :" and "Source size :", which are used first) else file size vs disc titles (`Get-DiscTitles`: MPLS
 parser for BDMV, VTS sizes for DVD; `Expected-Bytes`: movie disc = longest title, else median).
 A file quiet for 90 s is done. Status JSON → `<topic>-status` (priority 1); dashboard polls the last 2 h
 then streams `/sse`; `{"cmd":"autocompress","id","on"}` ← `<topic>-cmd`. Auto-compress: Plex scan, find the

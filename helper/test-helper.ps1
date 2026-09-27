@@ -282,6 +282,17 @@ try {
     Check 'rip: switch for this rip applied, others ignored, position remembered' ($script:Rip.autoCompress -eq $true -and $script:RipCmdSince -eq 'a3' -and $script:AskedUri -eq 'https://ntfy.sh/pld-abc-cmd/json?poll=1&since=10m')
     Remove-Item Function:\Invoke-WebRequest
 
+    # 21. ntfy reachability explained in plain words (a VPN blocked it on the owner's PC)
+    function Invoke-WebRequest { throw 'The operation has timed out.' }
+    function Get-NetAdapter { @([pscustomobject]@{ Name = 'SurfsharkWireGuard'; InterfaceDescription = 'WireGuard Tunnel'; Status = 'Up' }, [pscustomobject]@{ Name = 'Ethernet'; InterfaceDescription = 'Realtek'; Status = 'Up' }) }
+    $why = Test-Ntfy 'https://ntfy.sh'
+    Check 'ntfy blocked by a VPN: says which and how to fix' ($why -match 'SurfsharkWireGuard' -and $why -match 'Bypasser' -and $why -notmatch 'Ethernet')
+    function Invoke-WebRequest { 'ok' }
+    Check 'ntfy reachable: nothing to report' ((Test-Ntfy 'https://ntfy.sh') -eq '')
+    Remove-Item Function:\Invoke-WebRequest, Function:\Get-NetAdapter
+    $mk = Read-MakeMkvInfo @('Source :', 'BD-RE', 'Source size :', '76763.2 M', 'Read rate :', '17.6 M/s', 'Output file :', 'G:/PLEX/MOVIES/HP/HP_t00.mkv', 'Output size :', '1700.2 M')
+    Check "MakeMKV window: output file and source size read" ($mk.OutputFile -eq 'G:\PLEX\MOVIES\HP\HP_t00.mkv' -and $mk.SourceBytes -eq [long](76763.2 * 1MB))
+
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
     $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }

@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.5'
+$Version = '0.3.6'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -936,13 +936,23 @@ function New-Topic {
     'pld-' + (-join ($b | ForEach-Object { $chars[$_ % $chars.Length] }))
 }
 
+# Can this PC reach the ntfy server? '' if yes, otherwise the reason in plain words
+function Test-Ntfy([string]$server) {
+    try { Invoke-WebRequest -Uri "$($server.TrimEnd('/'))/v1/health" -UseBasicParsing -TimeoutSec 10 | Out-Null; '' }
+    catch {
+        $m = $_.Exception.Message
+        $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription + $_.Name) -match 'WireGuard|OpenVPN|TAP-|VPN|Surfshark|Nord|Mullvad|Proton' } | ForEach-Object { $_.Name })
+        if ($vpn.Count) { "this PC can't reach $server ($m). A VPN is on ($($vpn -join ', ')): add ntfy.sh to its bypass / split-tunnel list (Surfshark: Settings > VPN settings > Bypasser > Websites and IPs), then run setup again." }
+        else { "this PC can't reach $server ($m). A firewall or security program may be blocking it." }
+    }
+}
+
 function Setup-Notifications {
     if (-not (Compress-On)) { return }   # only the compressing PC has anything to report
     Say ''
     Say 'Phone notifications' Cyan
-    Say 'Get a notification on your phone when a compression or estimate finishes or fails, even with the'
-    Say 'phone locked and the dashboard closed. Uses the free ntfy app; only the movie title and the result'
-    Say 'are sent (through ntfy.sh), nothing else.'
+    Say 'Your phone can get a notification when a compression or estimate finishes or fails, even when the'
+    Say 'dashboard is closed. It uses the free ntfy app. Only the movie title and the result are sent.'
     $on = Notify-On
     if (-not (Ask 'Send phone notifications?' $true)) {
         if ($on) { $script:Cfg.notify.enabled = $false; Save-Config; Log 'Phone notifications turned off.' }
@@ -952,26 +962,32 @@ function Setup-Notifications {
     $topic = if ($script:Cfg.notify -and $script:Cfg.notify.topic) { $script:Cfg.notify.topic } else { New-Topic }
     $server = if ($script:Cfg.notify -and $script:Cfg.notify.server) { $script:Cfg.notify.server } else { 'https://ntfy.sh' }
     $pausesBefore = -not ($script:Cfg.notify -and $script:Cfg.notify.pauses -eq $false)
-    $pauses = Ask 'Also tell you when a compression pauses (for example while Plex is transcoding) and carries on again?' $pausesBefore
+    $pauses = Ask 'Also a quieter notification when a compression pauses (e.g. Plex is transcoding) and carries on?' $pausesBefore
     $script:Cfg | Add-Member -NotePropertyName notify -Force -NotePropertyValue ([ordered]@{ enabled = $true; server = $server; topic = $topic; pauses = $pauses })
     Save-Config
     Log "Phone notifications on (ntfy topic $topic), pause alerts $(if ($pauses) { 'on' } else { 'off' })."
-    Say ''
-    Say 'On your phone:' Green
-    Say '  1. Install "ntfy" from the Play Store (or App Store).'
-    Say '  2. Open it, tap +, and subscribe to this topic (keep the server as ntfy.sh):'
-    Say ''
-    Say "       $topic" Yellow
-    Say ''
-    Say "  (Or open $($server.TrimEnd('/'))/$topic on the phone and choose to open it in the app.)"
-    Say '  Keep the topic name private: anyone who knows it can read these notifications.'
-    Say ''
-    if (Ask 'Send a test notification now?' $true) {
-        try { Send-Ntfy 'Plex Library Helper is connected' "Notifications from $env:COMPUTERNAME work. You'll hear from it when a compression or estimate finishes." 'tada'; Say 'Sent. It should appear on your phone within a few seconds.' Green }
-        catch { Say "Couldn't send it: $($_.Exception.Message)" Yellow }
-    }
-}
 
+    Say ''
+    Say "Checking this PC can reach $server ..."
+    $problem = Test-Ntfy $server
+    if ($problem) { Say "  Not yet: $problem" Yellow; Say '  Your settings are saved; notifications start working as soon as that is fixed.' Yellow; return }
+    Say '  OK.' Green
+    Say ''
+    Say 'Now on your phone (one time):' Green
+    Say '  1. Install the app "ntfy" (Play Store).'
+    Say '  2. Open it and tap the + button.'
+    Say '  3. Topic name:' ; Say "        $topic" Yellow
+    Say '     Leave "Use another server" off, then tap Subscribe.'
+    Say '  (Keep that name private: anyone who knows it can read these notifications.)'
+    [void](Read-Host 'Press Enter once you have subscribed, and a test notification will be sent')
+    try { Send-Ntfy 'Plex Library Helper is connected' "Notifications from $env:COMPUTERNAME work. You'll hear from it when a compression or estimate finishes." 'tada' }
+    catch { Say "  Couldn't send it: $($_.Exception.Message)" Yellow; return }
+    if (Ask 'Sent. Did it arrive on your phone?' $true) { Say '  Great, notifications are set up.' Green; return }
+    Say '  Things to check on the phone:' Yellow
+    Say "   - the topic in the app is exactly $topic (no spaces), server ntfy.sh"
+    Say '   - Android Settings > Apps > ntfy > Notifications: allowed; Battery: Unrestricted'
+    Say '  Then run setup again to send another test.'
+}
 function Setup-Wizard {
     Say "Plex Library Helper $Version setup on $env:COMPUTERNAME" Cyan
     Say ''
@@ -1118,9 +1134,12 @@ function Setup-Rips {
     Save-Config
     Log "Rip progress on (auto-compress $(if ($auto) { "on: 4K $p4, Blu-ray $pH" } else { 'off' }))."
     Say ''
-    Say 'Open this link once on each device (PC, phone) to show rip progress on its dashboard:' Green
+    Say 'To see rips on the dashboard, open this link once on your phone and once on this PC' Green
+    Say '(copy it: select it with the mouse and press Enter, or send it to yourself):' Green
     Say "  $(Dashboard-Link)" Yellow
     Say '  Keep it private, like the ntfy topic.'
+    $p = Test-Ntfy $script:Cfg.notify.server
+    if ($p) { Say "  Note: $p" Yellow }
 }
 
 # ---------------------------------------------------------------- main
@@ -1146,6 +1165,7 @@ if ($Status) {
         "Compression: on. Work folder $($Cfg.compress.workDir), overnight window $($Cfg.compress.nightWindow)"
         if (Notify-On) { "Phone notifications: on (ntfy topic $($Cfg.notify.topic) on $($Cfg.notify.server))" } else { 'Phone notifications: off (run Set up Plex Library Helper to turn them on)' }
         if (Rip-On) { "MakeMKV rip progress: on. Dashboard link for each device: $(Dashboard-Link)" }
+        if ($Cfg.notify -and $Cfg.notify.topic) { $p = Test-Ntfy $Cfg.notify.server; "Can reach ntfy: $(if ($p) { "NO - $p" } else { 'yes' })" }
         Running-Workers | ForEach-Object { "  running: $($_.mode) '$($_.title)' ($($_.preset)), worker $($_.workerPid)" }
     } else { "Compression: off (to use this PC, run Set up Plex Library Helper and answer yes)" }
     "Jobs visible in Plex:"; Get-Jobs | ForEach-Object { "  $($_.Job.Tag)  on '$($_.Item.title)'" }

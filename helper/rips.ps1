@@ -124,24 +124,44 @@ function MakeMkv-Progress {
             foreach ($e in $w.FindAll([Windows.Automation.TreeScope]::Descendants, $tc)) { if ($e.Current.Name) { $texts += $e.Current.Name } }
         }
         if (-not $bars.Count) { return $null }
-        # MakeMKV shows "current progress" then "total progress"
-        [pscustomobject]@{ Current = $bars[0]; Total = $bars[$bars.Count - 1]; Texts = @($texts | Select-Object -Unique | Select-Object -First 12) }
+        # MakeMKV shows "current progress" then "total progress", and label/value pairs like
+        # "Output file :" "G:/PLEX/MOVIES/Title/Title_t00.mkv", "Source size :" "76763.2 M"
+        $info = Read-MakeMkvInfo $texts
+        [pscustomobject]@{ Current = $bars[0]; Total = $bars[$bars.Count - 1]; OutputFile = $info.OutputFile; SourceBytes = $info.SourceBytes; Texts = @($texts | Select-Object -Unique | Select-Object -First 16) }
     } catch { $null }
+}
+
+# The details MakeMKV's window shows while saving, as label/value pairs
+function Read-MakeMkvInfo([string[]]$texts) {
+    $pairs = @{}
+    for ($i = 0; $i -lt $texts.Count - 1; $i++) { if ($texts[$i] -match '^\s*(.+?)\s*:\s*$') { $pairs[$Matches[1]] = $texts[$i + 1] } }
+    $out = $pairs['Output file']; if ($out) { $out = $out.Replace('/', '\') }
+    $size = $null
+    if ($pairs['Source size'] -match '([\d.]+)\s*([KMG])') { $size = [long]([double]$Matches[1] * @{ K = 1KB; M = 1MB; G = 1GB }[$Matches[2]]) }
+    @{ OutputFile = $out; SourceBytes = $size }
 }
 
 # ---------------------------------------------------------------- watching
 
-# .mkv files in MakeMKV's destination that are being written (grew recently)
-function Rip-Files([string[]]$dirs, [datetime]$now) {
-    @(foreach ($d in $dirs) {
-        Get-ChildItem -LiteralPath $d -Filter '*.mkv' -File -ErrorAction SilentlyContinue | Where-Object { ($now - $_.LastWriteTime).TotalSeconds -lt $RipQuietSeconds }
-    })
+# .mkv files being written (grew recently): the one MakeMKV's window names, plus any in its destination
+# folders or their subfolders (a rip into a new folder isn't in MakeMKV's recent list until it's done)
+function Rip-Files([string[]]$dirs, [datetime]$now, [string]$outputFile) {
+    $recent = { $_.Extension -eq '.mkv' -and ($now - $_.LastWriteTime).TotalSeconds -lt $RipQuietSeconds }
+    $found = @()
+    if ($outputFile -and (Test-Path -LiteralPath $outputFile -PathType Leaf)) { $found += Get-Item -LiteralPath $outputFile }
+    foreach ($d in $dirs) {
+        $found += @(Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | Where-Object $recent)
+        foreach ($sub in Get-ChildItem -LiteralPath $d -Directory -ErrorAction SilentlyContinue | Where-Object { ($now - $_.LastWriteTime).TotalMinutes -lt 30 }) {
+            $found += @(Get-ChildItem -LiteralPath $sub.FullName -File -ErrorAction SilentlyContinue | Where-Object $recent)
+        }
+    }
+    @($found | Sort-Object FullName -Unique)
 }
 
 # One step of the watcher: $state (the helper keeps it between polls) is updated from what's on disk now.
 # Returns the status to publish, or $null when nothing is happening.
 function Rip-Step($state, [datetime]$now, [bool]$running, [string[]]$dirs, $discs, $gui) {
-    $files = if ($running) { @(Rip-Files $dirs $now) } else { @() }
+    $files = if ($running) { @(Rip-Files $dirs $now $(if ($gui) { $gui.OutputFile })) } else { @() }
     if (-not $state.active) {
         if (-not $files.Count) { return $null }
         # a rip has started
@@ -288,13 +308,21 @@ function Rip-Status($state, [datetime]$now, [string]$file, $gui, [string]$phase)
         $h = $state.files[$file]
         $secs = [math]::Max(1.0, ($now - $h.first).TotalSeconds)
         $rate = ($h.bytes - $h.firstBytes) / $secs
-        $expected = Expected-Bytes $state.titles $h.bytes
+        $expected = if ($gui -and $gui.SourceBytes) { [long][math]::Max($gui.SourceBytes, $h.bytes / 0.99) } else { Expected-Bytes $state.titles $h.bytes }
         $s.file = Split-Path $file -Leaf; $s.bytes = [long]$h.bytes; $s.rate = [long]$rate
         if ($gui) { $s.percent = $gui.Current; $s.totalPercent = $gui.Total; $s.exact = $true }
         elseif ($expected) { $s.percent = [math]::Round(100.0 * $h.bytes / $expected, 1); $s.expected = [long]$expected; $s.exact = $false }
         if ($rate -gt 0 -and $s.percent) {
-            # MakeMKV's total bar covers every title being ripped, so time left comes from the whole rip so far
-            $remaining = if ($gui -and $gui.Total -gt 0 -and $gui.Total -lt 100) { $s.elapsed * (100 - $gui.Total) / [math]::Max(1.0, $gui.Total) } elseif ($expected) { ($expected - $h.bytes) / $rate } else { $null }
+            # Time left: from the bytes still to write when the size is known; otherwise from how fast MakeMKV's
+            # total bar has been moving since the watcher first saw it (the rip may have started earlier)
+            $remaining = $null
+            if ($expected) { $remaining = ($expected - $h.bytes) / $rate }
+            if ($gui -and $gui.Total -gt 0 -and $gui.Total -lt 100) {
+                if ($null -eq $state.firstTotal) { $state.firstTotal = [double]$gui.Total; $state.firstTotalAt = $now }
+                $moved = [double]$gui.Total - $state.firstTotal; $took = ($now - $state.firstTotalAt).TotalSeconds
+                # several titles: the total bar says how much of the whole rip is left
+                if ($moved -gt 0.5 -and $took -gt 30 -and ($gui.Total -ne $gui.Current)) { $remaining = (100 - $gui.Total) * $took / $moved }
+            }
             if ($remaining) { $s.secsLeft = [long]$remaining }
         }
     }
