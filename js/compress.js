@@ -4,15 +4,15 @@
 import { fmtSize } from './model.js';
 
 // mbps = typical video bitrate it produces; fps = encode speed on the owner's PC (RX 6750 XT / i7-10700),
-// both from test encodes on a clean 4K film. Grainy films come out much bigger: that's what Estimate is for.
+// from test encodes on a clean 4K film (4K GPU speed from a real job: Harry Potter 1, 59 fps with GPU decoding). Grainy films come out much bigger: that's what Estimate is for.
 export const PRESETS = [
   { id: '4kx', label: '4K Extreme', height: 2160, where: 'Processor', mbps: 14, fps: 1.0, dv: true,
     note: 'Best quality for the space. Very slow: about two days for a 2-hour 4K film. For favourites.' },
-  { id: '4kh', label: '4K High', height: 2160, where: 'Graphics card', mbps: 18, fps: 30, dv: true,
+  { id: '4kh', label: '4K High', height: 2160, where: 'Graphics card', mbps: 18, fps: 55, dv: true,
     note: 'Looks the same as the original on a TV.' },
-  { id: '4kn', label: '4K Normal', height: 2160, where: 'Graphics card', mbps: 13, fps: 30, dv: true,
+  { id: '4kn', label: '4K Normal', height: 2160, where: 'Graphics card', mbps: 13, fps: 55, dv: true,
     note: 'Very close to the original; a good default.' },
-  { id: '4ks', label: '4K Data Saver', height: 2160, where: 'Graphics card', mbps: 6, fps: 30, dv: true,
+  { id: '4ks', label: '4K Data Saver', height: 2160, where: 'Graphics card', mbps: 6, fps: 55, dv: true,
     note: 'Much smaller; some softness in fine detail.' },
   { id: '1080h', label: '1080p High', height: 1080, where: 'Graphics card', mbps: 6, fps: 24, dv: false,
     note: 'Full HD. HDR films are converted to normal (SDR) colour.' },
@@ -24,7 +24,8 @@ export const PRESETS = [
 export const presetById = (id) => PRESETS.find((p) => p.id === id);
 
 export const RULES = [
-  { id: 'plex', label: 'Pause while someone is watching Plex', on: true },
+  { id: 'plex', label: 'Pause while Plex is transcoding a stream (the only playback that slows down)', on: true },
+  { id: 'plexall', label: 'Pause whenever anything is playing on Plex, even direct play', on: false },
   { id: 'game', label: 'Pause while a game or full-screen video is running', on: true },
   { id: 'idle', label: 'Only while nobody is using the PC (after 10 minutes idle)', on: false },
   { id: 'night', label: 'Only overnight (11 PM to 7 AM)', on: false },

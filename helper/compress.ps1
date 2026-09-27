@@ -13,7 +13,8 @@
               finished size, encode time and quality (VMAF) without writing anything to the library.
 
   Pause rules (checked every few seconds while encoding; ffmpeg is frozen, not killed)
-    plex   someone is watching something on Plex
+    plex     Plex is transcoding a stream (the thing that actually competes with an encode)
+    plexall  anything is playing on Plex, even direct play (paused sessions never count)
     game   a full-screen app (game or full-screen video) is in front
     idle   only run while nobody has used the PC for 10 minutes
     night  only run inside the overnight window (config nightWindow, default 23:00-07:00)
@@ -82,7 +83,7 @@ function Stream-Bps($s) {
 # Length of the video track itself (audio can run longer): time of the last video frame, found by seeking near the end
 function Video-Duration([string]$path, [double]$approx, [double]$fps) {
     foreach ($back in 30, 300) {
-    $from = [math]::Max(0, $approx - $back)
+    $from = [math]::Max(0.0, $approx - $back)
     $pts = (Invoke-Tool $script:Tools.ffprobe @('-v', 'error', '-select_streams', 'v:0', '-read_intervals', ('{0:0.###}%' -f $from), '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', (Qt $path)) 'Measuring the video length') -split "`r?`n" |
         Where-Object { $_ -match '^[\d.]+' } | ForEach-Object { [double]($_ -replace ',.*', '') }
     if ($pts) { return ($pts | Measure-Object -Maximum).Maximum + 1 / $fps }
@@ -131,7 +132,7 @@ function Preset-Problem($preset, $src) {
 function Video-Filters($preset, $src) {
     $f = @()
     $scale = $src.Height -gt $preset.Height * 1.1
-    $fit = if ($src.Width / [math]::Max(1, $src.Height) -ge 16 / 9) { 'w=1920:h=-2' } else { 'w=-2:h=1080' }
+    $fit = if ($src.Width / [math]::Max(1.0, $src.Height) -ge 16 / 9) { 'w=1920:h=-2' } else { 'w=-2:h=1080' }
     if ($preset.Height -eq 1080 -and $src.Hdr) {
         # HDR -> SDR for 1080p: tone-map on the CPU, then drop every HDR tag so TVs don't treat it as HDR
         $f += "zscale=$($fit):filter=spline36", 'zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709',
@@ -192,6 +193,8 @@ using System; using System.Runtime.InteropServices; using System.Text;
 public static class PldWin {
   [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h);
   [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern bool GetDiskFreeSpaceEx(string dir, out long freeToCaller, out long total, out long totalFree);
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO p);
   public static double IdleSeconds() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i); if (!GetLastInputInfo(ref i)) return 0; return ((uint)Environment.TickCount - i.dwTime) / 1000.0; }
@@ -222,15 +225,21 @@ function In-Window([string]$window, [datetime]$now) {
     if ($start -le $end) { $m -ge $start -and $m -lt $end } else { $m -ge $start -or $m -lt $end }
 }
 
-function Plex-Busy {
-    # Anyone watching? Ask Plex; if Plex can't be asked, fall back to "is Plex transcoding right now"
+# What Plex is doing: 'transcoding' (a stream being converted, which competes with encoding for the PC),
+# 'watching' (something playing directly, or a paused transcode), or '' (nothing playing). Paused
+# direct-play sessions don't count: a paused tablet could otherwise hold an encode all night.
+function Plex-Activity {
     try {
         if ($script:PlexUrl) {
             $r = Invoke-WebRequest -Uri "$($script:PlexUrl)/status/sessions" -Headers @{ 'X-Plex-Token' = $script:PlexToken; Accept = 'application/xml' } -TimeoutSec 5 -UseBasicParsing
-            if ($r.Content -match 'size="(\d+)"') { return [int]$Matches[1] -gt 0 }
+            $x = [xml]$r.Content
+            $playing = @(@($x.MediaContainer.Video) + @($x.MediaContainer.Track) | Where-Object { $_ -and $_.Player.state -ne 'paused' })
+            if (@($playing | Where-Object { $_.TranscodeSession -and $_.TranscodeSession.videoDecision -eq 'transcode' }).Count) { return 'transcoding' }
+            if ($playing.Count) { return 'watching' }
+            return ''
         }
     } catch { }
-    [bool](Get-Process 'Plex Transcoder' -ErrorAction SilentlyContinue)
+    if (Get-Process 'Plex Transcoder' -ErrorAction SilentlyContinue) { 'transcoding' } else { '' }
 }
 
 # Returns why the encode should be paused right now, or '' to run
@@ -238,7 +247,11 @@ function Pause-Reason($rules) {
     if ($rules.night -and -not (In-Window $script:NightWindow (Get-Date))) { return "waiting for the overnight window ($($script:NightWindow))" }
     if ($rules.idle -and [PldWin]::IdleSeconds() -lt $IdleMinutes * 60) { return 'the PC is in use' }
     if ($rules.game -and [PldWin]::FullScreenAppInFront()) { return 'a full-screen game or video is running' }
-    if ($rules.plex -and (Plex-Busy)) { return 'someone is watching Plex' }
+    if ($rules.plex -or $rules.plexall) {
+        $a = Plex-Activity
+        if ($a -eq 'transcoding') { return 'Plex is transcoding a stream' }
+        if ($a -eq 'watching' -and $rules.plexall) { return 'someone is watching Plex' }
+    }
     ''
 }
 
@@ -246,7 +259,7 @@ function Pause-Reason($rules) {
 
 # Runs ffmpeg for the video encode, freezing it while a pause rule applies. $onProgress gets
 # (fraction 0..1, encode fps, paused reason). Returns the number of frames written.
-function Run-Encode([string[]]$argList, [string]$progressPath, [double]$duration, $rules, [scriptblock]$onProgress) {
+function Run-Encode([string[]]$argList, [string]$progressPath, [double]$duration, $rules, [scriptblock]$onProgress, [long]$expectedFrames = 0) {
     $err = "$progressPath.err"
     Remove-Item -LiteralPath $progressPath, $err -ErrorAction SilentlyContinue
     $p = Start-Process -FilePath $script:Tools.ffmpeg -ArgumentList $argList -NoNewWindow -PassThru -RedirectStandardError $err
@@ -269,7 +282,11 @@ function Run-Encode([string[]]$argList, [string]$progressPath, [double]$duration
                 }
             }
             $prog = Read-Progress $progressPath
-            if ($prog) { $frames = $prog.frame; & $onProgress ([math]::Min(1, $prog.outSec / [math]::Max(1, $duration))) $prog.fps $paused }
+            if ($prog) {
+                # Raw HEVC output leaves ffmpeg's out_time empty, so count frames when we know how many there are
+                $frac = if ($expectedFrames -gt 0) { $prog.frame / $expectedFrames } else { $prog.outSec / [math]::Max(1.0, $duration) }
+                $frames = $prog.frame; & $onProgress ([math]::Min(1.0, [double]$frac)) $prog.fps $paused
+            }
         }
     } finally { $script:Child = $null }
     if ($p.ExitCode -ne 0) { throw "Encoding failed: $(((Get-Content -LiteralPath $err -Tail 4 -ErrorAction SilentlyContinue) -join ' ').Trim())" }
@@ -287,7 +304,7 @@ function Read-Progress([string]$path) {
     if (-not $last.ContainsKey('frame')) { return $null }
     $us = 0L; [void][long]::TryParse([string]$last['out_time_us'], [ref]$us)
     $fps = 0.0; [void][double]::TryParse([string]$last['fps'], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$fps)
-    [pscustomobject]@{ frame = [long]$last['frame']; outSec = [math]::Max(0, $us / 1e6); fps = $fps; ended = $last['progress'] -eq 'end' }
+    [pscustomobject]@{ frame = [long]$last['frame']; outSec = [math]::Max(0.0, $us / 1e6); fps = $fps; ended = $last['progress'] -eq 'end' }
 }
 
 # ---------------------------------------------------------------- audio / mux
@@ -323,7 +340,7 @@ function Verify-Output([string]$path, $src, $preset, [long]$framesEncoded, [int]
     if (@($o.Audio).Count -ne $audioTracks) { $problems += "has $(@($o.Audio).Count) audio tracks, expected $audioTracks" }
     if ($o.Subs -ne $src.Subs) { $problems += "has $($o.Subs) subtitle tracks, original has $($src.Subs)" }
     # Decode the start and the end: any decode error fails the job
-    foreach ($ss in @(0, [math]::Max(0, $o.Duration - 60))) {
+    foreach ($ss in @(0, [math]::Max(0.0, $o.Duration - 60))) {
         $e = Invoke-Tool $script:Tools.ffmpeg @('-nostdin', '-v', 'error', '-ss', ('{0:0}' -f $ss), '-i', (Qt $path), '-t', '20', '-map', '0:v:0', '-map', '0:a?', '-f', 'null', '-') 'Test playback' -Stderr
         if ($e -and $e.Trim()) { $problems += "decode errors at $([int]$ss) s" }
     }
@@ -336,7 +353,7 @@ function Verify-Output([string]$path, $src, $preset, [long]$framesEncoded, [int]
 function Run-Estimate($job, $src, $preset) {
     $samples = 3
     $len = if ($preset.Encoder -eq 'x265') { 8 } else { 20 }
-    $len = [math]::Min($len, [math]::Max(2, $src.Duration / 10))
+    $len = [math]::Min($len, [math]::Max(2.0, $src.Duration / 10))
     $totalBytes = 0L; $totalSec = 0.0; $encSecs = 0.0; $frames = 0L; $vmafs = @()
     for ($i = 0; $i -lt $samples; $i++) {
         $pos = $src.Duration * (0.2 + 0.3 * $i)
@@ -347,7 +364,7 @@ function Run-Estimate($job, $src, $preset) {
         $t = Get-Date
         $n = Run-Encode (Encode-Args $preset $src $cut $out (Join-Path $script:Work "sample$i.progress")) (Join-Path $script:Work "sample$i.progress") $cutInfo.Duration $job.rules {
             param($f, $fps, $why) Write-Status @{ state = 'run'; phase = 'Estimating'; percent = [int](($i + $f) / $samples * 100); paused = $why }
-        }
+        } $cutInfo.Frames
         $encSecs += ((Get-Date) - $t).TotalSeconds - $script:LastPausedSecs
         $frames += $n
         $totalBytes += (Get-Item -LiteralPath $out).Length; $totalSec += $cutInfo.Duration
@@ -359,10 +376,33 @@ function Run-Estimate($job, $src, $preset) {
         if ($m.Success) { $vmafs += [double]$m.Groups[1].Value }
     }
     $audio = Audio-Plan $src $job.audio
-    $videoBytes = $totalBytes / [math]::Max(1, $totalSec) * $src.Duration
-    $fps = $frames / [math]::Max(1, $encSecs)
+    $videoBytes = $totalBytes / [math]::Max(1.0, $totalSec) * $src.Duration
+    $fps = $frames / [math]::Max(1.0, $encSecs)
     $secs = $src.Frames / [math]::Max(0.1, $fps) + $src.Size / 150MB + 60   # encode + reading/copying + checks
     @{ bytes = [long]($videoBytes + $audio.Bytes); secs = [long]$secs; vmaf = $(if ($vmafs.Count) { [math]::Round(($vmafs | Measure-Object -Average).Average, 1) } else { $null }); fps = [math]::Round($fps, 1); srcBytes = $src.Size }
+}
+
+# Free bytes where a folder lives: a local drive or a network share (\\PC\Share\...)
+function Free-Bytes([string]$folder) {
+    $free = 0L; $total = 0L; $all = 0L
+    if (-not [PldWin]::GetDiskFreeSpaceEx($folder.TrimEnd('\') + '\', [ref]$free, [ref]$total, [ref]$all)) { return $null }
+    $free
+}
+
+# Problems that would only show at the very end of a long encode: fail on them in the first seconds instead.
+# Checks the result can be written next to the original (the folder is on a share for movies on another PC)
+# and that there's room for it there and in the work folder.
+function Preflight-Check($src, [string]$srcDir) {
+    $probe = Join-Path $srcDir ".pld-write-test-$PID.tmp"
+    try { [IO.File]::WriteAllText($probe, 'Plex Library Helper write test; safe to delete') }
+    catch { throw "Can't write to $srcDir from this PC, so the compressed copy couldn't be saved next to the original. Give $env:USERNAME on $env:COMPUTERNAME permission to change files in that folder (or its share). ($($_.Exception.Message))" }
+    finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
+    # Assume the result can be up to 60% of the original: once in the work folder, once next to the original
+    $need = [long]($src.Size * 0.6) + 2GB
+    foreach ($d in @($script:Work, $srcDir)) {
+        $free = Free-Bytes $d
+        if ($null -ne $free -and $free -lt $need) { throw ('Not enough free space for {0} ({1:N0} GB free, needs about {2:N0} GB).' -f $d, ($free / 1GB), ($need / 1GB)) }
+    }
 }
 
 function Run-Compress($job, $src, $preset) {
@@ -376,12 +416,7 @@ function Run-Compress($job, $src, $preset) {
     $dest = Join-Path $destDir $name
     $k = 2; while (Test-Path -LiteralPath $dest) { $dest = Join-Path $destDir "$title - Compressed $($preset.Label) ($k).mkv"; $k++ }
 
-    # Enough room? Assume up to 60% of the original for the work copy and again at the destination.
-    $need = [long]($src.Size * 0.6) + 2GB
-    foreach ($d in @($script:Work, $destDir) | Where-Object { $_ -match '^[A-Za-z]:' }) {
-        $free = (Get-PSDrive -Name $d.Substring(0, 1)).Free
-        if ($free -lt $need) { throw ('Not enough free space on {0} ({1:N0} GB free, needs about {2:N0} GB).' -f $d.Substring(0, 2), ($free / 1GB), ($need / 1GB)) }
-    }
+    Preflight-Check $src $srcDir
 
     $useRpu = $preset.Encoder -eq 'amf' -and $preset.KeepsDV -and $src.DvProfile -in 7, 8
     $expectDv = $preset.KeepsDV -and $src.DvProfile -in 7, 8
@@ -406,7 +441,7 @@ function Run-Compress($job, $src, $preset) {
     $progress = Join-Path $script:Work 'encode.progress'
     $frames = Run-Encode (Encode-Args $preset $src $src.Path $videoOut $progress) $progress $src.Duration $job.rules {
         param($f, $fps, $why) & $report 'Encoding' ($f * 100 * $weights.encode) $fps $why
-    }
+    } $src.Frames
     Wlog "Encoded $frames frames"
 
     $videoFinal = $videoOut

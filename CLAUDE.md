@@ -115,8 +115,21 @@ decode use ~2 s CPU per 20 s clip.
 The owner's LG C1 plays Dolby Vision (not HDR10+). DV 8.1 playback of a compressed MKV on the C1 via
 Plex was **not yet confirmed** (test clip `G:\PLEX\MOVIES\Compression Test DV (2025)\`; remove after).
 
+Real jobs (2026-09-26): Harry Potter 1 disc rip, 4K High + smaller audio: 76.6 GB → 15.8 GB (21%),
+encode 1 h 02 min at 59 fps (GPU decode doubled the test speed), whole job 1 h 18 min.
+Pirates 3 estimate (4K High): 56% at VMAF 95.3 (grainier film).
+Pause rule changed after a night paused by a Chromecast direct play + a *paused* tablet session:
+`plex` now = only while Plex is **transcoding** (videoDecision=transcode, playing), `plexall` = any
+playing session; paused sessions never count.
+Pre-flight (start of every compress): write test + free space (GetDiskFreeSpaceEx, works on UNC) in the
+original's folder and the work folder. It found that LENOVOLEGION (connects as `BEELINK-MINI\John`)
+**can't write to `\\BEELINK-MINI\PLEX Server`**: the share needs Change permission for John before
+Beelink movies can be compressed.
+
 ### Compression gotchas
 
+- **`[math]::Min(1, 0.37)` returns 0** (Int32 overload, same trap as the 1MB one below): this kept GPU
+  progress at 0% until the end. Use `1.0` / `[double]` in Min/Max.
 - AMF `-rc qvbr` ignores bitrate limits on this driver (output 2.7× the source). Use `-rc cqp`.
 - AMF `-usage high_quality` / `-preanalysis` fail to init on RDNA2.
 - AMF labels 10-bit output "Main" unless `-profile:v main10` is set.

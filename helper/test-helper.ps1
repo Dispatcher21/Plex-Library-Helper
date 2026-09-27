@@ -85,6 +85,34 @@ try {
     $sdrKeep = (Encode-Args $Presets['1080h'] $sdr1080 'in.mkv' 'out.hevc' $null) -join ' '
     Check '1080p SDR source stays 8-bit main profile, no filters' ($sdrKeep -match 'profile:v main ' -and $sdrKeep -notmatch ' -vf ')
     Check 'overnight window wraps midnight' ((In-Window '23:00-07:00' ([datetime]'2026-01-01 23:30')) -and (In-Window '23:00-07:00' ([datetime]'2026-01-02 06:59')) -and -not (In-Window '23:00-07:00' ([datetime]'2026-01-02 12:00')))
+    Check 'options: "pause for any playback" rule' ((Parse-CompressOptions 'p=4kh;r=plexall').rules.plexall -and -not (Parse-CompressOptions 'p=4kh;r=plex').rules.plexall)
+
+    # 11. Plex pause rule: only transcoding counts by default; paused sessions never count
+    $script:PlexUrl = 'http://plex.test'; $script:PlexToken = 'x'
+    function Invoke-WebRequest { [pscustomobject]@{ Content = $script:FakeSessions } }
+    $script:FakeSessions = '<MediaContainer size="2"><Video title="Stuart Little"><Player state="playing"/></Video><Video title="Blue''s Clues"><Player state="paused"/><TranscodeSession videoDecision="transcode"/></Video></MediaContainer>'
+    Check 'direct play = watching; paused transcode ignored' ((Plex-Activity) -eq 'watching')
+    Check 'default rule keeps encoding during direct play' ((Pause-Reason @{ plex = $true }) -eq '')
+    Check '"any playback" rule pauses during direct play' ((Pause-Reason @{ plexall = $true }) -eq 'someone is watching Plex')
+    $script:FakeSessions = '<MediaContainer size="1"><Video title="Dune"><Player state="playing"/><TranscodeSession videoDecision="transcode"/></Video></MediaContainer>'
+    Check 'a playing transcode pauses' ((Pause-Reason @{ plex = $true }) -eq 'Plex is transcoding a stream')
+    $script:FakeSessions = '<MediaContainer size="1"><Video title="Dune"><Player state="playing"/><TranscodeSession videoDecision="copy"/></Video></MediaContainer>'
+    Check 'direct stream (video copied) is not transcoding' ((Plex-Activity) -eq 'watching')
+    $script:FakeSessions = '<MediaContainer size="0"></MediaContainer>'
+    Check 'nothing playing' ((Plex-Activity) -eq '')
+    Remove-Item Function:\Invoke-WebRequest
+
+    # 12. Pre-flight: free space on a folder, and a write test that leaves nothing behind
+    $pf = Join-Path $root 'preflight'; New-Item -ItemType Directory -Force $pf | Out-Null
+    Check 'free space readable' ((Free-Bytes $pf) -gt 0)
+    $script:Work = $pf
+    $threw = $false; try { Preflight-Check ([pscustomobject]@{ Size = 1MB }) $pf } catch { $threw = $true }
+    Check 'pre-flight passes on a writable folder and cleans up' (-not $threw -and -not (Get-ChildItem -LiteralPath $pf -Force))
+    $threw = $false; try { Preflight-Check ([pscustomobject]@{ Size = 1MB }) (Join-Path $root 'no-such-folder') } catch { $threw = $_.Exception.Message -match "Can't write" }
+    Check 'pre-flight refuses an unwritable folder' $threw
+    $threw = $false; try { Preflight-Check ([pscustomobject]@{ Size = 1PB }) $pf } catch { $threw = $_.Exception.Message -match 'Not enough free space' }
+    Check 'pre-flight refuses when there is no room' $threw
+
     Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

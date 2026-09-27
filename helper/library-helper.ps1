@@ -20,7 +20,8 @@
     A separate prefix, so helpers older than 0.3 ignore them instead of failing them.
     ce  estimate: encode three short samples and report predicted size, time and quality
     c   compress: encode the whole movie and add it next to the original (never replaces it)
-    Queued info carries the options: p=<preset>;a=<keep|small>;r=<plex+game+idle+night>.
+    Queued info carries the options: p=<preset>;a=<keep|small>;r=<plex+plexall+game+idle+night>
+    (plex = pause while Plex transcodes, plexall = while anything plays; see compress.ps1).
     Only a helper set up with -EnableCompress takes these; it reads files on its own drives or over
     the network, and runs compress.ps1 as a separate process so quarantines keep working meanwhile.
     States: queued -> run:<percent>;<seconds left>;<phase or pause reason>;<preset> -> done / fail.
@@ -45,7 +46,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.0'
+$Version = '0.3.1'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -411,7 +412,7 @@ function Parse-CompressOptions([string]$info) {
     [ordered]@{
         preset = [string]$o['p']
         audio  = $(if ($o['a'] -eq 'small') { 'small' } else { 'keep' })
-        rules  = [ordered]@{ plex = $r -contains 'plex'; game = $r -contains 'game'; idle = $r -contains 'idle'; night = $r -contains 'night' }
+        rules  = [ordered]@{ plex = $r -contains 'plex'; plexall = $r -contains 'plexall'; game = $r -contains 'game'; idle = $r -contains 'idle'; night = $r -contains 'night' }
     }
 }
 

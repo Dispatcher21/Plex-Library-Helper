@@ -104,8 +104,12 @@ size, encode time and picture quality, in a few minutes) or **Start compressing*
   best). HDR10 is kept. HDR10+ is not.
 - **Audio:** keep everything, or one smaller main track (reuses the disc's Dolby Digital Plus track,
   often Atmos, when there is one).
-- **When:** pause while someone is watching Plex, pause while a game or full-screen video runs,
-  only when the PC is idle, only overnight. Paused encodes carry on by themselves.
+- **When:** pause while Plex is transcoding a stream (on by default; direct play and paused videos
+  don't count), or whenever anything plays on Plex; pause while a game or full-screen video runs;
+  only when the PC is idle; only overnight. Paused encodes carry on by themselves.
+- **Movies on another PC** are read and written over the network, so the compressing PC's Windows
+  account needs permission to *change* files on that share. Every job checks this (and free space)
+  in its first seconds and says exactly what's missing, instead of failing after hours.
 - **Grainy films** (lots of film grain) shrink far less, sometimes not at all. That's why Estimate exists.
 - **Safety:** the original is never touched. The result is checked (length, every frame, audio and
   subtitle tracks, Dolby Vision, a test playback) before it's copied next to the original as
