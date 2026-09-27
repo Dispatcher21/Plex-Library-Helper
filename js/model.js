@@ -128,6 +128,17 @@ export function buildMovies(records) {
   return [...map.values()].filter((e) => e.versions.length).map(finishEntry);
 }
 
+const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+
+// Episode numbers missing from a season: gaps between 1 and the highest episode you have. The end of a
+// season can't be checked (Plex doesn't say how many episodes a season has unless they're in the library).
+function gaps(se) {
+  if (se.season === 0) return []; // specials are rarely complete or in order
+  const have = new Set(se.eps.map((e) => e.ep).filter((n) => n > 0));
+  if (!have.size) return [];
+  return range(1, Math.max(...have)).filter((n) => !have.has(n));
+}
+
 export function buildShows(records) {
   const map = new Map();
   for (const r of records) {
@@ -154,9 +165,13 @@ export function buildShows(records) {
     const all = eps.flatMap((e) => e.versions);
     const resCount = {}; all.forEach((v) => { resCount[v.res] = (resCount[v.res] || 0) + 1; });
     const top = Object.entries(resCount).sort((a, b) => b[1] - a[1])[0]?.[0] || 'SD';
+    const seasonList = [...seasons.values()].sort((a, b) => a.season - b.season).map((se) => ({ ...se, eps: se.eps.sort((a, b) => a.ep - b.ep), locs: [...se.locs], missing: gaps(se) }));
+    // Seasons missing between ones you have (e.g. 1, 2, 4 -> 3). Specials (season 0) don't count.
+    const numbered = seasonList.map((se) => se.season).filter((n) => n > 0);
+    const missingSeasons = numbered.length ? range(1, Math.max(...numbered)).filter((n) => !numbered.includes(n)) : [];
     return {
       kind: 'show', k: s.k, title: s.title, year: s.year, thumb: s.thumb, thumbServer: s.thumbServer, addedAt: s.addedAt, items: s.items, unmatched: s.unmatched,
-      seasons: [...seasons.values()].sort((a, b) => a.season - b.season).map((se) => ({ ...se, eps: se.eps.sort((a, b) => a.ep - b.ep), locs: [...se.locs] })),
+      seasons: seasonList, missingSeasons, missingEps: seasonList.reduce((a, se) => a + se.missing.length, 0),
       epCount: eps.length, size: eps.reduce((a, e) => a + e.size, 0), dupeEps: eps.filter((e) => e.dupes).length,
       extra: eps.reduce((a, e) => a + e.extra, 0), res: top, resMix: resCount,
       locs: [...new Set(all.map((v) => v.loc))],

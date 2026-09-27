@@ -113,7 +113,7 @@ const MOVIE_CHIPS = [
   ['all', 'All'], ['dupes', 'Duplicates'], ['unmatched', 'Unmatched'], ['4K', '4K'], ['1080p', '1080p'], ['720p', '720p'], ['SD', 'SD / 480p'],
   ['remux', 'Remux / disc rip'], ['hdr', 'HDR / DV'], ['lossless', 'Lossless audio'], ['big', 'Over 30 GB'],
 ];
-const SHOW_CHIPS = [['all', 'All'], ['dupes', 'Duplicate episodes'], ['unmatched', 'Unmatched'], ['4K', '4K'], ['1080p', '1080p'], ['720p', '720p'], ['SD', 'SD / 480p'], ['big', 'Over 100 GB']];
+const SHOW_CHIPS = [['all', 'All'], ['dupes', 'Duplicate episodes'], ['missing', 'Missing episodes'], ['unmatched', 'Unmatched'], ['4K', '4K'], ['1080p', '1080p'], ['720p', '720p'], ['SD', 'SD / 480p'], ['big', 'Over 100 GB']];
 
 function allVersions(e) { return e.kind === 'movie' ? e.versions : e.seasons.flatMap((s) => s.eps.flatMap((ep) => ep.versions)); }
 
@@ -127,6 +127,7 @@ function matches(e, f) {
     case 'remux': return vs?.some((v) => v.src === 'Remux' || v.src === 'Disc rip');
     case 'hdr': return vs?.some((v) => v.hdr || v.dv);
     case 'lossless': return vs?.some((v) => v.lossless);
+    case 'missing': return e.kind === 'show' && (e.missingEps > 0 || e.missingSeasons.length > 0);
     case 'big': return e.size > (e.kind === 'movie' ? 30 : 100) * GB;
     default: return true;
   }
@@ -552,6 +553,14 @@ async function runQuarantine() {
   await refreshJobs();
 }
 
+// [4, 7, 8, 9] -> "E04, E07-E09"
+function missingText(nums) {
+  const out = []; let i = 0;
+  const e = (n) => `E${String(n).padStart(2, '0')}`;
+  while (i < nums.length) { let j = i; while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++; out.push(j > i ? `${e(nums[i])}-${e(nums[j])}` : e(nums[i])); i = j + 1; }
+  return out.join(', ');
+}
+
 function showDetail(s) {
   const rows = s.seasons.map((se) => `<tr>
     <td>${se.season === 0 ? 'Specials' : `Season ${se.season}`}</td>
@@ -559,10 +568,13 @@ function showDetail(s) {
     <td class="n">${fmtSize(se.size)}</td>
     <td class="hide-sm">${Object.entries(se.res).map(([r, n]) => `${esc(r)} ×${n}`).join(', ')}</td>
     <td class="hide-sm">${se.locs.map((id) => esc(locName(state.locations.find((l) => l.id === id) || { machine: '?', drive: id }))).join('<br>')}</td>
-    <td class="n">${se.dupes ? `<span class="b dup">${se.dupes}</span>` : '—'}</td></tr>`).join('');
+    <td class="n">${se.dupes ? `<span class="b dup">${se.dupes}</span>` : '—'}</td>
+    <td>${se.missing.length ? `<span class="b sd" title="Episodes missing between ones you have">${esc(missingText(se.missing))}</span>` : '—'}</td></tr>`).join('');
   const dupeEps = s.seasons.flatMap((se) => se.eps.filter((ep) => ep.dupes));
+  const gapNote = s.missingSeasons.length || s.missingEps ? `<p class="note">${s.missingSeasons.length ? `<b>Missing ${s.missingSeasons.length === 1 ? 'season' : 'seasons'} ${s.missingSeasons.join(', ')}</b>. ` : ''}Missing episodes are gaps between episodes you have; the last episodes of a season can't be checked.</p>` : '';
   return `<div class="db">
-    <table class="seasons"><thead><tr><th>Season</th><th class="n">Eps</th><th class="n">Size</th><th class="hide-sm">Quality</th><th class="hide-sm">Drive</th><th class="n">Dupes</th></tr></thead><tbody>${rows}</tbody></table>
+    ${gapNote}
+    <table class="seasons"><thead><tr><th>Season</th><th class="n">Eps</th><th class="n">Size</th><th class="hide-sm">Quality</th><th class="hide-sm">Drive</th><th class="n">Dupes</th><th>Missing</th></tr></thead><tbody>${rows}</tbody></table>
     ${dupeEps.length ? `<details class="dupeps"><summary>${dupeEps.length} duplicated episode${dupeEps.length === 1 ? '' : 's'} · ${fmtSize(s.extra)} extra</summary>
       ${dupeEps.map((ep) => `<h4>S${String(ep.season).padStart(2, '0')}E${String(ep.ep).padStart(2, '0')} · ${esc(ep.title)}</h4>${ep.versions.map((v, i) => versionHtml(v, ep, i)).join('')}`).join('')}
     </details>` : ''}

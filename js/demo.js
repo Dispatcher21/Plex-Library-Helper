@@ -57,6 +57,12 @@ export function demoSnapshots() {
   addEps('s2', 'The Office (US)', 2, 22, `${E}\\Shows\\The Office (US) (2005)`, 0.73, '1080');
   addEps('s3', 'Bob\'s Burgers', 1, 13, `${E}\\Shows\\Bob's Burgers (2011)`, 0.19, '1080');
   addEps('s3', 'Bob\'s Burgers', 2, 9, `${E}\\Shows\\Bob's Burgers (2011)`, 0.22, '720');
+  addEps('s2', 'The Office (US)', 4, 14, `${E}\\Shows\\The Office (US) (2005)`, 0.73, '1080');
+  // Gaps for the missing-episode check: Futurama S02E05, S02E11-E12; The Office has no Season 3
+  for (const [show, s, e] of [['Futurama', 2, 5], ['Futurama', 2, 11], ['Futurama', 2, 12]]) {
+    const i = eps.findIndex((x) => x.grandparentTitle === show && x.parentIndex === s && x.index === e);
+    if (i >= 0) eps.splice(i, 1);
+  }
 
   const now = Date.now();
   return [{
