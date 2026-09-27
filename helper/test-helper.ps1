@@ -77,7 +77,7 @@ try {
     Check '4K preset fine on a scope 4K file' (-not (Preset-Problem $Presets['4kn'] $scope))
     Check 'Dolby Vision profile 5 refused' ([bool](Preset-Problem $Presets['4kh'] ([pscustomobject]@{ Width = 3840; Height = 2160; DvProfile = 5 })))
     $gpu4k = (Encode-Args $Presets['4kh'] $hdr4k 'in.mkv' 'out.hevc' $null) -join ' '
-    Check '4K GPU: frames stay on the GPU, raw HEVC out, HDR tags kept' ($gpu4k -match 'hwaccel_output_format d3d11' -and $gpu4k -match 'hevc_mp4toannexb' -and $gpu4k -match 'color_trc smpte2084' -and $gpu4k -notmatch ' -vf ')
+    Check '4K GPU: frames stay on the GPU with a big enough frame pool, raw HEVC out, HDR tags kept' ($gpu4k -match 'hwaccel_output_format d3d11 -extra_hw_frames 16' -and $gpu4k -match 'hevc_mp4toannexb' -and $gpu4k -match 'color_trc smpte2084' -and $gpu4k -notmatch ' -vf ')
     $cpu4k = (Encode-Args $Presets['4kx'] $hdr4k 'in.mkv' 'out.mkv' $null) -join ' '
     Check '4K Extreme: x265 with Dolby Vision forced on and a VBV cap' ($cpu4k -match 'libx265' -and $cpu4k -match '-dolbyvision 1' -and $cpu4k -match 'vbv-maxrate=40000')
     $gpu1080 = (Encode-Args $Presets['1080n'] $scope 'in.mkv' 'out.hevc' $null) -join ' '
@@ -197,6 +197,30 @@ try {
     $after = & $runShow 'pld:t1-d:qma:sh900:queued:ids=101+999;n=2;s=S01'
     Check 'already-moved file: reported, not crashed' ("$after" -match ':fail:.*File not found')
     Remove-Item Function:\Pms
+
+    # 18. Compressing a season: which episode files get picked
+    $cd = "$root\Shows\Comp Show (2019)"
+    $c1 = "$cd\Season 1\Comp - S01E01.mkv"; MakeFile $c1 3 | Out-Null
+    $c1b = "$cd\Season 1\Comp - S01E01 (big).mkv"; MakeFile $c1b 6 | Out-Null
+    $c2 = "$cd\Season 1\Comp - S01E02.mkv"; MakeFile $c2 3 | Out-Null
+    $c2c = "$cd\Season 1\Comp Show (2019) - S01E02 - Compressed 1080p Normal.mkv"; MakeFile $c2c 1 | Out-Null
+    $c3 = "$cd\Season 2\Comp - S02E01.mkv"; MakeFile $c3 3 | Out-Null
+    $pm = { param($id, $file, $mb) [pscustomobject]@{ id = $id; duration = 1300000; Part = @([pscustomobject]@{ file = (Plexify $file); size = $mb * 1MB }) } }
+    $script:FakeEps = @(
+        [pscustomobject]@{ parentIndex = 1; index = 1; title = 'One'; Media = @((& $pm 11 $c1 3), (& $pm 12 $c1b 6)) },
+        [pscustomobject]@{ parentIndex = 1; index = 2; title = 'Two'; Media = @((& $pm 21 $c2 3), (& $pm 22 $c2c 1)) },
+        [pscustomobject]@{ parentIndex = 2; index = 1; title = 'Three'; Media = @(& $pm 31 $c3 3) })
+    function Pms($method, $path, $params) { if ($path -like '*/allLeaves') { return @{ MediaContainer = @{ Metadata = $script:FakeEps } } }; $null }
+    $s1 = Show-CompressItems '77' 'S01' $shares
+    Check 'season compress: biggest copy picked, compressed episodes skipped, other seasons left out' ($s1.items.Count -eq 1 -and $s1.items[0].ep -eq 'S01E01' -and $s1.items[0].source -eq $c1b -and $s1.already -eq 1 -and $s1.items[0].durationMs -eq 1300000)
+    $sa = Show-CompressItems '77' 'all' $shares
+    Check 'whole-show compress: every season, in order' (($sa.items | ForEach-Object { $_.ep }) -join ',' -eq 'S01E01,S02E01')
+    Remove-Item Function:\Pms
+    Check 'season names' ((Scope-Name 'S02') -eq 'Season 2' -and (Scope-Name 'S00') -eq 'Specials' -and (Scope-Name 'all') -eq 'whole show')
+    $PresetLabels = @{ '1080n' = '1080p Normal' }
+    $jfS = [pscustomobject]@{ mode = 'compress'; title = 'Comp Show'; year = 2019; preset = '1080n'; scope = 'S01'; items = @(1, 2) }
+    $ns = Job-Notification $jfS 'done' ([pscustomobject]@{ bytes = 3GB; srcBytes = 12GB; episodes = 10; done = 9; failed = 1; problem = 'S01E05: file not found' }) ''
+    Check 'season notification: counts and the problem, flagged' ($ns.title -eq 'Compressed: Comp Show (2019) - Season 1' -and $ns.message -like '1080p Normal: 9 of 10 episodes, 12.0 GB * 3.0 GB (25%). 1 not done: S01E05: file not found' -and $ns.priority -eq 'high')
 
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }

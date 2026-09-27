@@ -143,7 +143,31 @@ interactive only** (the dashboard can't see inside `_TO_DELETE`, and permanent d
 remotely triggerable). Deletes only `<drive>:\_TO_DELETE\yyyy-MM-dd` batches, skips batches containing
 reparse points, logs `{deleted, bytes, titles}` lines in manifest.jsonl.
 
+### Shows (helper 0.3.4)
+
+Episodes can't carry labels, so show jobs are labels **on the show** (Plex type 2; tested: labels on shows
+work, capitalised like movies, 600+ characters stored intact). Old helpers scan movie sections only, so
+they never see show jobs: the Beelink's helper must be updated before show quarantines on its drives run.
+- Quarantine: `pld:<id>:qm|qma:sh<showKey>:<state>:ids=<media>+<media>...;n=..;s=<scope>`, one label per
+  drive (dashboard groups by `v.loc`), ≤40 ids each. `qm` = guarded (keep-best, replace-originals: each copy
+  only moves if another copy of that episode exists and isn't targeted), `qma` = season/show removal.
+  Scopes: `all`, `S02`, `dupes-S02`, `dupes-S01E03`, `replace-S02`. Done info `b,f,n,s,x` (x = first problem).
+  `Quarantine -Episode` never moves a folder (season folders are shared and episodes are < 300 MB) and
+  only takes sidecars named exactly `<episode>.*`.
+- Compress: `pldc:<id>:c|ce:sh<showKey>:queued:p=..;a=..;r=..;s=S02|all`. Helper builds `items` (per
+  episode the biggest non-compressed copy; skips episodes that already have a `- Compressed` copy);
+  worker `Run-Episodes` does them in turn (one failing doesn't stop the rest), output
+  `<Show> (<Year>) - S02E05 - Compressed <preset>.mkv` next to the episode. `Estimate-Episodes` samples
+  first/middle/last episode (skips unreadable ones) and scales by running time. Run info has a 5th
+  field (scope); done info adds `c` (episodes), `n` (done), `f`, `w` (scope), `x`.
+- Dashboard: season cards (Compress…, Replace N originals with compressed, Keep best, Quarantine…),
+  show-wide versions, missing-episode gaps (`missingText`), job progress on the show.
+
 ### Compression gotchas
+
+- **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg
+  silently skipped ~20% of frames on some files (the frame-count check caught it). Fixed with
+  `-extra_hw_frames 16`. Jobs before helper 0.3.4 can fail their final check because of this.
 
 - **`[math]::Min(1, 0.37)` returns 0** (Int32 overload, same trap as the 1MB one below): this kept GPU
   progress at 0% until the end. Use `1.0` / `[double]` in Min/Max.

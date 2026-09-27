@@ -49,9 +49,9 @@ export function decodeInfo(info) {
 
 // Running jobs report "percent;secondsLeft;what it's doing (or 'paused: why');preset"
 export function parseRun(info) {
-  const [pct, left, what, preset] = String(info || '').split(';');
+  const [pct, left, what, preset, scope] = String(info || '').split(';');
   const n = Number(pct);
-  return { percent: Number.isFinite(n) ? n : 0, secsLeft: Number(left) || null, what: what || '', preset: preset || '', paused: /^paused:/i.test(what || '') ? what.replace(/^paused:\s*/i, '') : '' };
+  return { percent: Number.isFinite(n) ? n : 0, secsLeft: Number(left) || null, what: what || '', preset: preset || '', scope: scope || '', paused: /^paused:/i.test(what || '') ? what.replace(/^paused:\s*/i, '') : '' };
 }
 
 // Which preset a job is for, whatever state it's in
@@ -75,17 +75,22 @@ export function fmtDuration(secs) {
 export function roughGuess(p, v, audio = 'keep') {
   const secs = (v.duration || 0) / 1000;
   if (!secs) return { bytes: v.size * 0.3, secs: null, little: false };
-  const audioMbps = audio === 'small' ? 0.64 : v.lossless ? 5 : 0.8;
-  const srcVideoMbps = Math.max(0.5, (v.size * 8) / secs / 1e6 - audioMbps);
+  const totalMbps = (v.size * 8) / secs / 1e6;
+  const audioMbps = Math.min(audio === 'small' ? 0.64 : v.lossless ? 5 : 0.8, totalMbps * 0.4);
+  const srcVideoMbps = Math.max(totalMbps * 0.6, totalMbps - audioMbps);
   const videoMbps = Math.min(p.mbps, srcVideoMbps * 0.9);
-  const bytes = ((videoMbps + audioMbps) * 1e6 * secs) / 8;
-  return { bytes, secs: (secs * 23.976) / p.fps, little: bytes > v.size * 0.7 };
+  const bytes = Math.min(v.size, ((videoMbps + audioMbps) * 1e6 * secs) / 8);   // never more than it is now
+  // 1080p presets were timed turning 4K HDR into 1080p SDR on the processor; an HD source needs no conversion
+  // and stays on the graphics card, which is several times faster (rough figure until measured)
+  const fps = p.height === 1080 && (v.height || 1080) <= 1100 && !v.hdr ? 150 : p.fps;
+  return { bytes, secs: (secs * 23.976) / fps, little: bytes > v.size * 0.7 };
 }
 
 export function estimateText(info, v) {
   const o = decodeInfo(info);
   const bytes = Number(o.b); const src = Number(o.s) || v?.size || 0;
-  const parts = [`about ${fmtSize(bytes)}${src ? ` (${Math.round((bytes / src) * 100)}% of ${fmtSize(src)})` : ''}`];
+  const eps = Number(o.c) ? ` for ${o.c} episodes` : '';
+  const parts = [`about ${fmtSize(bytes)}${eps}${src ? ` (${Math.round((bytes / src) * 100)}% of ${fmtSize(src)})` : ''}`];
   if (Number(o.t)) parts.push(`about ${fmtDuration(Number(o.t))} to encode`);
   if (o.q) parts.push(`quality ${o.q} / 100`);
   return parts.join(' · ');

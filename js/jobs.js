@@ -68,6 +68,13 @@ export async function queueShowQuarantine(api, show, versions, action, scope) {
   return queued;
 }
 
+// Compress (c) or estimate (ce) a season (scope S02) or the whole show (all): one label on the show
+export async function queueShowCompress(api, show, action, options, scope) {
+  const tag = `${CPREFIX}${newId()}:${action}:sh${show.ratingKey}:queued:${options};s=${scope}`;
+  await api.addLabel(show.sectionId, show.ratingKey, tag, 2);
+  return parse(tag);
+}
+
 // Ask the helper to stop a running compression: same job, state "stop" (new label first, then remove the old)
 export async function stopJob(api, job) {
   const tag = `${job.prefix}${job.id}:${job.action}:${job.mediaId}:stop`;
@@ -122,15 +129,17 @@ export class DemoJobs {
   // Pretend encode: a few seconds per stage, with one pause for "someone is watching Plex"
   queueCompress(v, entry, action, options, guess) {
     const j = this.add(CPREFIX, action, v, entry, options);
+    if (v.show) { j.show = true; j.type = 2; }
     const o = Object.fromEntries(options.split(';').map((kv) => kv.split('=')));
     if (action === 'ce') {
-      [10, 45, 80].forEach((p, i) => setTimeout(() => j.state !== 'stop' && this.set(j, 'run', `${p};;Estimating;${o.p}`), 1500 + i * 1500));
-      setTimeout(() => j.state !== 'stop' && this.set(j, 'done', `a=${o.a};b=${Math.round(guess.bytes * 1.08)};p=${o.p};q=${o.p === '4ks' ? 88.7 : 94.3};s=${v.size};t=${Math.round(guess.secs || 5400)}`), 6000);
+      [10, 45, 80].forEach((p, i) => setTimeout(() => j.state !== 'stop' && this.set(j, 'run', `${p};;Estimating;${o.p};${o.s || ''}`), 1500 + i * 1500));
+      setTimeout(() => j.state !== 'stop' && this.set(j, 'done', `a=${o.a};b=${Math.round(guess.bytes * 1.08)};${v.show ? `c=${v.episodes};w=${o.s};` : ''}p=${o.p};q=${o.p === '4ks' ? 88.7 : 94.3};s=${v.size};t=${Math.round(guess.secs || 5400)}`), 6000);
     } else {
       const total = Math.round(guess.secs || 5400);
-      const steps = [[3, 'Reading Dolby Vision'], [20, 'Encoding'], [37, 'paused: someone is watching Plex'], [55, 'Encoding'], [80, 'Encoding'], [97, 'Checking the result']];
-      steps.forEach(([p, what], i) => setTimeout(() => j.state === 'run' || j.state === 'queued' ? this.set(j, 'run', `${p};${Math.round(total * (1 - p / 100))};${what};${o.p}`) : null, 2000 + i * 2500));
-      setTimeout(() => j.state === 'run' && this.set(j, 'done', `b=${Math.round(guess.bytes)};dv=${o.p?.startsWith('4k') ? 1 : 0};p=${o.p};s=${v.size}`), 2000 + steps.length * 2500);
+      const ep = (n) => (v.show ? `Episode ${n} of ${v.episodes} (S01E0${n}): ` : '');
+      const steps = [[3, `${ep(1)}Reading Dolby Vision`], [20, `${ep(1)}Encoding`], [37, 'paused: Plex is transcoding a stream'], [55, `${ep(2)}Encoding`], [80, `${ep(3)}Encoding`], [97, `${ep(3)}Checking the result`]];
+      steps.forEach(([p, what], i) => setTimeout(() => j.state === 'run' || j.state === 'queued' ? this.set(j, 'run', `${p};${Math.round(total * (1 - p / 100))};${what};${o.p};${o.s || ''}`) : null, 2000 + i * 2500));
+      setTimeout(() => j.state === 'run' && this.set(j, 'done', v.show ? `b=${Math.round(guess.bytes)};c=${v.episodes};f=0;n=${v.episodes};p=${o.p};s=${v.size};w=${o.s}` : `b=${Math.round(guess.bytes)};dv=${o.p?.startsWith('4k') ? 1 : 0};p=${o.p};s=${v.size}`), 2000 + steps.length * 2500);
     }
     return j;
   }

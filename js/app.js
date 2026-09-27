@@ -320,14 +320,14 @@ function compressAction(v, i, e) {
 function compressStatus(v) {
   const out = [];
   const c = jobFor(v, 'c');
-  if (c && ACTIVE.includes(c.state)) out.push(progressHtml(c, v));
+  if (c && ACTIVE.includes(c.state)) out.push(progressHtml(c));
   else if (c?.state === 'done') {
     const o = cz.decodeInfo(c.info);
     out.push(`<div class="cstat"><span class="pill done">Compressed</span> ${esc(cz.presetById(o.p)?.label || '')}: ${fmtSize(Number(o.s) || v.size)} → <b>${fmtSize(Number(o.b))}</b>. The new copy appears here once Plex has scanned it; then choose <b>Replace original…</b> on it, or keep both.</div>`);
   } else if (c?.state === 'fail') out.push(`<div class="cstat"><span class="pill fail">Compression failed</span> ${esc(c.info)}</div>`);
   const est = jobFor(v, 'ce');
   if (est && (!c || est.created > c.created)) {
-    if (ACTIVE.includes(est.state)) out.push(progressHtml(est, v));
+    if (ACTIVE.includes(est.state)) out.push(progressHtml(est));
     else if (est.state === 'done') {
       const o = cz.decodeInfo(est.info);
       out.push(`<div class="cstat"><span class="pill">Estimate</span> ${esc(cz.presetById(o.p)?.label || '')}: ${esc(cz.estimateText(est.info, v))}</div>`);
@@ -336,9 +336,9 @@ function compressStatus(v) {
   return out.join('');
 }
 
-function progressHtml(j, v) {
+function progressHtml(j) {
   const est = j.action === 'ce';
-  const preset = cz.presetById(cz.jobPreset(j))?.label || '';
+  const preset = `${j.show ? `${scopeText(jobScope(j))} · ` : ''}${cz.presetById(cz.jobPreset(j))?.label || ''}`;
   const verb = est ? 'Estimating' : 'Compressing';
   if (j.state === 'queued') {
     const late = Date.now() - j.created > 90000 ? ` Waiting for the Library Helper on the PC with the graphics card. Is it running, and did you answer yes to compression in its setup? It also waits while another encode is running. Not installed yet? ${HELPER_LINK}.` : '';
@@ -438,7 +438,7 @@ async function refreshJobs() {
 
 function announce(j) {
   const v = findVersion(j);
-  const name = `${j.title}${j.year ? ` (${j.year})` : ''}`;
+  const name = `${j.title}${j.year ? ` (${j.year})` : ''}${j.show ? ` · ${scopeText(jobScope(j))}` : ''}`;
   const o = cz.decodeInfo(j.info);
   const preset = cz.presetById(o.p)?.label || 'Compression';
   if (j.state === 'fail') {
@@ -447,7 +447,8 @@ function announce(j) {
   } else if (j.action === 'ce') {
     notify.show(`Estimate ready: ${name}`, `${preset}: ${cz.estimateText(j.info, v)}`, j.id);
   } else {
-    notify.show(`Compressed: ${name}`, `${preset}: ${fmtSize(Number(o.s) || v?.size || 0)} → ${fmtSize(Number(o.b))}. The new copy is next to the original in Plex.`, j.id);
+    const eps = o.c ? `${o.n} of ${o.c} episodes, ` : '';
+    notify.show(`Compressed: ${name}`, `${preset}: ${eps}${fmtSize(Number(o.s) || v?.size || 0)} → ${fmtSize(Number(o.b))}${Number(o.f) ? ` (${o.f} not done)` : ''}. The new cop${o.c ? 'ies are' : 'y is'} next to the original${o.c ? 's' : ''} in Plex.`, j.id);
   }
 }
 
@@ -465,7 +466,7 @@ function renderJobsButton() {
 }
 
 function jobDescription(j) {
-  if (j.show) {
+  if (j.show && j.kind === 'quarantine') {
     const o = jobsApi.showJobInfo(j);
     const what = `Quarantine ${scopeText(o.scope)}`;
     const where = `show · ${o.ids.length || o.n} episode cop${(o.ids.length || o.n) === 1 ? 'y' : 'ies'}`;
@@ -473,16 +474,19 @@ function jobDescription(j) {
     return { what, where, info, percent: null };
   }
   const v = findVersion(j);
-  const where = v ? `${v.res} · ${fmtSize(v.size)} · ${v.machine} · ${v.drive}` : `copy ${j.mediaId}`;
+  const where = j.show ? 'show' : v ? `${v.res} · ${fmtSize(v.size)} · ${v.machine} · ${v.drive}` : `copy ${j.mediaId}`;
   if (j.kind === 'compress') {
     const preset = cz.presetById(cz.jobPreset(j))?.label || '';
-    const what = `${j.action === 'ce' ? 'Estimate' : 'Compress'}${preset ? ` (${preset})` : ''}`;
+    const what = `${j.action === 'ce' ? 'Estimate' : 'Compress'}${j.show ? ` ${scopeText(jobScope(j))}` : ''}${preset ? ` (${preset})` : ''}`;
     let info = '';
     if (j.state === 'run') {
       const r = cz.parseRun(j.info);
       info = `${Math.round(r.percent)}%${r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : ''} · ${r.paused ? `paused: ${r.paused}` : r.what}`;
     } else if (j.state === 'done' && j.action === 'ce') info = cz.estimateText(j.info, v);
-    else if (j.state === 'done') { const o = cz.decodeInfo(j.info); info = `${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}, the original is untouched`; }
+    else if (j.state === 'done') {
+      const o = cz.decodeInfo(j.info);
+      info = o.c ? `${o.n} of ${o.c} episodes, ${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}${Number(o.f) ? `, ${o.f} not done: ${o.x}` : ''}; originals untouched`: `${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}, the original is untouched`;
+    }
     else if (j.state === 'fail') info = j.info;
     return { what, where, info, percent: j.state === 'run' ? cz.parseRun(j.info).percent : null };
   }
@@ -573,10 +577,42 @@ function missingText(nums) {
 const seasonName = (n) => (Number(n) === 0 ? 'Specials' : `Season ${Number(n)}`);
 const epCode = (ep) => `S${String(ep.season).padStart(2, '0')}E${String(ep.ep).padStart(2, '0')}`;
 function scopeText(scope) {
-  const m = /^(dupes-)?(all|S(\d+)(E\d+)?)$/.exec(scope || '');
+  const m = /^(dupes-|replace-)?(all|S(\d+)(E\d+)?)$/.exec(scope || '');
   if (!m) return scope || '';
   const what = m[2] === 'all' ? 'whole show' : m[4] ? m[2] : seasonName(m[3]);
-  return m[1] ? `duplicates · ${what}` : what;
+  return m[1] === 'dupes-' ? `duplicates · ${what}` : m[1] === 'replace-' ? `originals replaced by compressed copies · ${what}` : what;
+}
+const scopeOf = (sel) => (sel === 'all' ? 'all' : `S${String(sel).padStart(2, '0')}`);
+const epsOf = (s, sel) => (sel === 'all' ? s.seasons : s.seasons.filter((se) => String(se.season) === String(sel))).flatMap((se) => se.eps);
+
+// A season (or the whole show) presented to the Compress dialog as if it were one copy: the episodes
+// still to compress (those without a compressed copy yet), their total size and running time
+function showCopy(s, sel) {
+  const todo = epsOf(s, sel).filter((ep) => !ep.versions.some((v) => v.compressed)).map((ep) => ep.versions.find((v) => !v.missing) || ep.versions[0]).filter(Boolean);
+  if (!todo.length) return null;
+  const first = todo.find((v) => v.showRatingKey) || todo[0];
+  const item = s.items.find((i) => i.serverId === first.serverId && i.ratingKey === first.showRatingKey) || s.items[0];
+  const res = {}; todo.forEach((v) => { res[v.res] = (res[v.res] || 0) + 1; });
+  return {
+    show: true, scope: scopeOf(sel), episodes: todo.length, checked: true, missing: false,
+    serverId: item.serverId, ratingKey: item.ratingKey, sectionId: item.sectionId || first.sectionId, mediaId: `sh${item.ratingKey}`,
+    res: Object.entries(res).sort((a, b) => b[1] - a[1])[0][0], height: Math.max(...todo.map((v) => v.height || 0)),
+    size: todo.reduce((a, v) => a + v.size, 0), duration: todo.reduce((a, v) => a + (v.duration || 0), 0),
+    lossless: todo.some((v) => v.lossless), dv: todo.some((v) => v.dv), hdr: todo.some((v) => v.hdr), acodec: first.acodec, ch: first.ch, atmos: todo.some((v) => v.atmos),
+  };
+}
+// Which season a compression job is for: queued labels say s=S02, running ones carry it in the progress,
+// finished ones say w=S02 (there s is the size of the originals)
+function jobScope(j) {
+  if (j.state === 'run') return cz.parseRun(j.info).scope;
+  const o = cz.decodeInfo(j.info);
+  return (j.state === 'queued' ? o.s : o.w) || '';
+}
+function activeShowCompress(s, scope) { return jobsForShow(s).some((j) => j.kind === 'compress' && j.action === 'c' && ACTIVE.includes(j.state) && (jobScope(j) === scope || jobScope(j) === 'all' || scope === 'all')); }
+// After compressing: the originals of episodes that now have a compressed copy
+function replaceTargets(s, eps) {
+  const busy = busyIds(s);
+  return eps.filter((ep) => ep.versions.some((v) => v.compressed)).flatMap((ep) => ep.versions.filter((v) => !v.compressed && !v.missing && !busy.has(String(v.mediaId))));
 }
 
 function jobsForShow(s) {
@@ -598,6 +634,7 @@ function showJobsHtml(s) {
   const jobs = jobsForShow(s).slice(0, 6);
   if (!jobs.length) return '';
   return `<div class="showjobs">${jobs.map((j) => {
+    if (j.kind === 'compress' && ACTIVE.includes(j.state)) return progressHtml(j);
     const d = jobDescription(j);
     return `<div class="cstat"><span class="pill ${j.state === 'stop' ? 'queued' : j.state}">${jobsApi.STATES[j.state] || esc(j.state)}</span> ${esc(d.what)}${d.info ? ` · ${esc(d.info)}` : ''}</div>`;
   }).join('')}</div>`;
@@ -611,6 +648,8 @@ function seasonHtml(s, se) {
     <div class="shead"><b>${seasonName(se.season)}</b><span>${eps.length} ep${eps.length === 1 ? '' : 's'} · ${fmtSize(se.size)} · ${Object.entries(se.res).map(([r, n]) => `${esc(r)} ×${n}`).join(', ')}</span></div>
     <div class="sfacts">${locs}${se.dupes ? ` · <span class="b dup">${se.dupes} duplicated</span>` : ''}${se.missing.length ? ` · <span class="b sd" title="Episodes missing between ones you have">missing ${esc(missingText(se.missing))}</span>` : ''}</div>
     <div class="actions">
+      ${showCopy(s, String(se.season)) && !activeShowCompress(s, scopeOf(se.season)) ? `<button class="btn small" data-scompress="${se.season}">Compress ${seasonName(se.season).toLowerCase()}…</button>` : ''}
+      ${replaceTargets(s, eps).length ? `<button class="btn small" data-sreplace="${se.season}" title="Quarantine the originals of episodes that now have a compressed copy">Replace ${replaceTargets(s, eps).length} original${replaceTargets(s, eps).length === 1 ? '' : 's'} with compressed</button>` : ''}
       ${dupes.length ? `<button class="btn small" data-sdupes="${se.season}">Keep best, quarantine ${dupes.length} duplicate${dupes.length === 1 ? '' : 's'} (${fmtSize(dupes.reduce((a, v) => a + v.size, 0))})</button>` : ''}
       <button class="btn small danger" data-sq="${se.season}">Quarantine ${seasonName(se.season).toLowerCase()}…</button>
     </div>
@@ -626,6 +665,7 @@ function showDetail(s) {
     ${gapNote}
     ${showJobsHtml(s)}
     <div class="actions">
+      ${s.seasons.length > 1 && showCopy(s, 'all') && !activeShowCompress(s, 'all') ? '<button class="btn small" data-scompress="all">Compress whole show…</button>' : ''}
       ${allDupes.length ? `<button class="btn small" data-sdupes="all">Keep best of every episode: quarantine ${allDupes.length} duplicate${allDupes.length === 1 ? '' : 's'} (${fmtSize(allDupes.reduce((a, v) => a + v.size, 0))})</button>` : ''}
       <button class="btn small danger" data-sq="all">Quarantine whole show…</button>
     </div>
@@ -636,7 +676,7 @@ function showDetail(s) {
         return `<h4>${epCode(ep)} · ${esc(ep.title)}${t.length ? ` <button class="btn small" data-edupe="${esc(ep.season)}x${esc(ep.ep)}">Keep best, quarantine ${t.length === 1 ? 'the other' : `the other ${t.length}`}</button>` : ''}</h4>${ep.versions.map((v, i) => versionHtml(v, ep, i)).join('')}`;
       }).join('')}
     </details>` : ''}
-    <p class="note">Quarantine moves episode files into <code>_TO_DELETE</code> on their own drive, done by the Library Helper on that PC (it needs version 0.3.4 or newer for shows). Nothing is deleted. "Keep best" keeps each episode's highest-quality copy, and the helper double-checks that copy still exists first.</p>
+    <p class="note">Quarantine moves episode files into <code>_TO_DELETE</code> on their own drive, done by the Library Helper on that PC (it needs version 0.3.4 or newer for shows; update the helper on every PC). Nothing is deleted. "Keep best" keeps each episode's highest-quality copy, and the helper double-checks that copy still exists first.</p>
   </div>`;
 }
 
@@ -650,14 +690,15 @@ function confirmShowQuarantine(s, versions, action, scope) {
   const total = versions.reduce((a, v) => a + v.size, 0);
   const eps = new Map(); for (const v of versions) eps.set(v.epCode, (eps.get(v.epCode) || 0) + 1);
   const codes = [...eps.keys()].sort();
-  const dupes = action === 'qm';
+  const replace = scope.startsWith('replace-');
+  const dupes = action === 'qm' && !replace;
   const whole = scope === 'all';
   $('confirm-body').innerHTML = `<div class="db" style="padding-top:18px">
-    <h2 style="margin:0 0 4px">${dupes ? `Quarantine ${versions.length} duplicate cop${versions.length === 1 ? 'y' : 'ies'} of` : whole ? 'Quarantine all of' : `Quarantine ${seasonName(scope.slice(1)).toLowerCase()} of`} ${esc(s.title)}?</h2>
-    <p class="fine">The Library Helper on each PC moves these files into <code>_TO_DELETE</code> on the same drive. Nothing is deleted. ${dupes ? 'For every episode it first checks that the copy being kept still exists; if not, that episode is left alone.' : ''}</p>
+    <h2 style="margin:0 0 4px">${replace ? `Replace ${versions.length} original${versions.length === 1 ? '' : 's'} with the compressed cop${versions.length === 1 ? 'y' : 'ies'} in` : dupes ? `Quarantine ${versions.length} duplicate cop${versions.length === 1 ? 'y' : 'ies'} of` : whole ? 'Quarantine all of' : `Quarantine ${seasonName(scope.slice(1)).toLowerCase()} of`} ${esc(s.title)}?</h2>
+    <p class="fine">The Library Helper on each PC moves these files into <code>_TO_DELETE</code> on the same drive. Nothing is deleted. ${dupes || replace ? `For every episode it first checks that the ${replace ? 'compressed copy' : 'copy being kept'} still exists; if not, that episode is left alone.` : ''}</p>
     <ul><li><b>${versions.length} episode file${versions.length === 1 ? '' : 's'} · ${fmtSize(total)}</b>${[...byLoc].map(([loc, n]) => { const l = state.locations.find((x) => x.id === loc); return `<code>${esc(l ? locName(l) : loc)}: ${n}</code>`; }).join('')}
       <code>${esc(codes.slice(0, 30).join(', '))}${codes.length > 30 ? `, and ${codes.length - 30} more` : ''}</code></li></ul>
-    ${dupes ? '' : `<p class="warn">${whole ? `${esc(s.title)} will disappear from Plex` : `${seasonName(scope.slice(1))} will disappear from Plex`} until you put the files back. Emptying <code>_TO_DELETE</code> later deletes them for good.</p>`}
+    ${dupes || replace ? '' : `<p class="warn">${whole ? `${esc(s.title)} will disappear from Plex` : `${seasonName(scope.slice(1))} will disappear from Plex`} until you put the files back. Emptying <code>_TO_DELETE</code> later deletes them for good.</p>`}
     <p>Frees <b>${fmtSize(total)}</b> once you empty <code>_TO_DELETE</code>.</p>
     <p id="confirm-error" class="error" hidden></p>
     <div class="foot"><button class="btn ghost" data-close>Cancel</button><button class="btn danger solid" data-go>Quarantine ${versions.length} file${versions.length === 1 ? '' : 's'}</button></div></div>`;
@@ -768,17 +809,19 @@ function renderCompress() {
   const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
   // The latest estimate for exactly these settings
   const ests = state.jobs.filter((j) => j.kind === 'compress' && j.action === 'ce' && j.serverId === v.serverId && String(j.mediaId) === String(v.mediaId)).sort((a, b) => b.created - a.created);
-  const est = ests.find((j) => { const o = j.state === 'run' ? { p: cz.jobPreset(j) } : cz.decodeInfo(j.info); return o.p === c.preset && (!o.a || o.a === c.audio || j.state === 'run'); });
+  const est = ests.find((j) => { const o = j.state === 'run' ? { p: cz.jobPreset(j) } : cz.decodeInfo(j.info); return o.p === c.preset && (!o.a || o.a === c.audio || j.state === 'run') && (!v.show || jobScope(j) === v.scope); });
   const estRunning = est && ACTIVE.includes(est.state);
   let estHtml = '';
   if (est?.state === 'done') {
     const o = cz.decodeInfo(est.info);
-    estHtml = `<div class="cest"><b>Estimate from 3 samples of this film:</b> ${esc(cz.estimateText(est.info, v))}${o.q ? `<div class="fine">Quality ${esc(o.q)}: ${esc(cz.qualityWords(o.q))}.</div>` : ''}</div>`;
-  } else if (estRunning) estHtml = progressHtml(est, v);
+    estHtml = `<div class="cest"><b>Estimate from ${v.show ? 'samples of up to 3 episodes' : '3 samples of this film'}:</b> ${esc(cz.estimateText(est.info, v))}${o.q ? `<div class="fine">Quality ${esc(o.q)}: ${esc(cz.qualityWords(o.q))}.</div>` : ''}</div>`;
+  } else if (estRunning) estHtml = progressHtml(est);
   else if (est?.state === 'fail') estHtml = `<div class="cest error">Estimate failed: ${esc(est.info)}</div>`;
 
-  $('compress-body').innerHTML = `<div class="dh"><div><h2>Compress ${esc(e.title)}${e.year ? ` (${e.year})` : ''}</h2>
-      <div class="sub">This copy: ${esc(v.res)} · ${esc(v.src)} · ${fmtSize(v.size)}${v.dv ? ' · Dolby Vision' : v.hdr ? ' · HDR' : ''}${v.duration ? ` · ${cz.fmtDuration(v.duration / 1000)}` : ''}</div></div>
+  const heading = v.show ? `Compress ${v.scope === 'all' ? 'all of' : `${scopeText(v.scope).toLowerCase()} of`} ${esc(e.title)}` : `Compress ${esc(e.title)}${e.year ? ` (${e.year})` : ''}`;
+  const what = v.show ? `${v.episodes} episode${v.episodes === 1 ? '' : 's'} to do (ones already compressed are skipped): ${esc(v.res)}` : `This copy: ${esc(v.res)} · ${esc(v.src)}`;
+  $('compress-body').innerHTML = `<div class="dh"><div><h2>${heading}</h2>
+      <div class="sub">${what} · ${fmtSize(v.size)}${v.dv ? ' · Dolby Vision' : v.hdr ? ' · HDR' : ''}${v.duration ? ` · ${cz.fmtDuration(v.duration / 1000)}` : ''}</div></div>
       <div class="hbtns"><button class="btn ghost small" data-close>Close</button></div></div>
     <div class="db">
       <h3 class="ch">Quality</h3>
@@ -819,7 +862,12 @@ async function queueCompression(action) {
   try {
     if (c.v.missing || !c.v.checked) throw new Error('the file is missing or hasn\'t been checked yet');
     const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
-    if (state.demo) state.demoJobs.queueCompress(c.v, c.e, action, opts, cz.roughGuess(p, c.v, c.audio));
+    if (state.demo) state.demoJobs.queueCompress(c.v, c.e, action, c.v.show ? `${opts};s=${c.v.scope}` : opts, cz.roughGuess(p, c.v, c.audio));
+    else if (c.v.show) {
+      const api = state.servers[c.v.serverId]?.api;
+      if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
+      await jobsApi.queueShowCompress(api, c.v, action, opts, c.v.scope);
+    }
     else {
       const api = state.servers[c.v.serverId]?.api;
       if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
@@ -1041,6 +1089,10 @@ function bind() {
       const s = openEntry;
       const eps = (sel) => (sel === 'all' ? s.seasons : s.seasons.filter((se) => String(se.season) === sel)).flatMap((se) => se.eps);
       const scopeOf = (sel) => (sel === 'all' ? 'all' : `S${String(sel).padStart(2, '0')}`);
+      const sc = ev.target.closest('[data-scompress]');
+      if (sc) { const v = showCopy(s, sc.dataset.scompress); if (v) openCompress(s, v); return; }
+      const sr = ev.target.closest('[data-sreplace]');
+      if (sr) { confirmShowQuarantine(s, replaceTargets(s, eps(sr.dataset.sreplace)), 'qm', `replace-${scopeOf(sr.dataset.sreplace)}`); return; }
       const sd = ev.target.closest('[data-sdupes]');
       if (sd) { confirmShowQuarantine(s, dupeTargets(s, eps(sd.dataset.sdupes)), 'qm', `dupes-${scopeOf(sd.dataset.sdupes)}`); return; }
       const sq = ev.target.closest('[data-sq]');

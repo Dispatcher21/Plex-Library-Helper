@@ -162,7 +162,9 @@ function Encode-Args($preset, $src, [string]$inPath, [string]$outPath, [string]$
     if ($preset.Encoder -eq 'amf') {
         # GPU decode too: same speed, almost no CPU. Frames stay on the GPU unless CPU filters need them.
         $a += '-hwaccel', 'd3d11va'
-        if (-not $filters.Count) { $a += '-hwaccel_output_format', 'd3d11' }
+        # Frames stay on the GPU unless CPU filters need them. The default pool of GPU frames is too small
+        # while the encoder holds some: ffmpeg then drops frames ("Static surface pool size exceeded").
+        if (-not $filters.Count) { $a += '-hwaccel_output_format', 'd3d11', '-extra_hw_frames', '16' }
     }
     if ($seek -ge 0) { $a += '-ss', ('{0:0.###}' -f $seek) }
     if ($length -gt 0) { $a += '-t', ('{0:0.###}' -f $length) }
@@ -351,8 +353,7 @@ function Verify-Output([string]$path, $src, $preset, [long]$framesEncoded, [int]
 
 # ---------------------------------------------------------------- the two modes
 
-function Run-Estimate($job, $src, $preset) {
-    $samples = 3
+function Run-Estimate($job, $src, $preset, [int]$samples = 3) {
     $len = if ($preset.Encoder -eq 'x265') { 8 } else { 20 }
     $len = [math]::Min($len, [math]::Max(2.0, $src.Duration / 10))
     $totalBytes = 0L; $totalSec = 0.0; $encSecs = 0.0; $frames = 0L; $vmafs = @()
@@ -364,7 +365,7 @@ function Run-Estimate($job, $src, $preset) {
         $cutInfo = Get-SourceInfo $cut
         $t = Get-Date
         $n = Run-Encode (Encode-Args $preset $src $cut $out (Join-Path $script:Work "sample$i.progress")) (Join-Path $script:Work "sample$i.progress") $cutInfo.Duration $job.rules {
-            param($f, $fps, $why) Write-Status @{ state = 'run'; phase = 'Estimating'; percent = [int](($i + $f) / $samples * 100); paused = $why }
+            param($f, $fps, $why) Write-Status @{ state = 'run'; phase = "$($script:PhasePrefix)Estimating"; percent = [int](& $script:MapPct (($i + $f) / $samples * 100)); paused = $why }
         } $cutInfo.Frames
         $encSecs += ((Get-Date) - $t).TotalSeconds - $script:LastPausedSecs
         $frames += $n
@@ -406,16 +407,20 @@ function Preflight-Check($src, [string]$srcDir) {
     }
 }
 
-function Run-Compress($job, $src, $preset) {
-    $title = Safe-Name "$($job.title)$(if ($job.year) { " ($($job.year))" })"
-    $name = "$title - Compressed $($preset.Label).mkv"
-    # Put the result next to the original when the movie has its own folder; for a loose file in a
-    # shared folder like E:\Movies, make "<Title> (<Year>)\" there so Plex treats it as the same movie
+# $target (episodes): @{ dir; base = "Show (Year) - S02E05"; title } puts the result in the episode's own folder
+function Run-Compress($job, $src, $preset, $target = $null) {
     $srcDir = [IO.Path]::GetDirectoryName($src.Path)
-    $others = @(Get-ChildItem -LiteralPath $srcDir -File | Where-Object { $_.FullName -ne $src.Path -and $_.Extension -match '^\.(mkv|mp4|m4v|avi|ts|m2ts)$' -and $_.Length -gt 300MB })
-    $destDir = if ($others.Count) { Join-Path $srcDir $title } else { $srcDir }
-    $dest = Join-Path $destDir $name
-    $k = 2; while (Test-Path -LiteralPath $dest) { $dest = Join-Path $destDir "$title - Compressed $($preset.Label) ($k).mkv"; $k++ }
+    if ($target) {
+        $title = $target.title; $base = $target.base; $destDir = $target.dir
+    } else {
+        $title = Safe-Name "$($job.title)$(if ($job.year) { " ($($job.year))" })"; $base = $title
+        # Put the result next to the original when the movie has its own folder; for a loose file in a
+        # shared folder like E:\Movies, make "<Title> (<Year>)\" there so Plex treats it as the same movie
+        $others = @(Get-ChildItem -LiteralPath $srcDir -File | Where-Object { $_.FullName -ne $src.Path -and $_.Extension -match '^\.(mkv|mp4|m4v|avi|ts|m2ts)$' -and $_.Length -gt 300MB })
+        $destDir = if ($others.Count) { Join-Path $srcDir $title } else { $srcDir }
+    }
+    $dest = Join-Path $destDir "$base - Compressed $($preset.Label).mkv"
+    $k = 2; while (Test-Path -LiteralPath $dest) { $dest = Join-Path $destDir "$base - Compressed $($preset.Label) ($k).mkv"; $k++ }
 
     Preflight-Check $src $srcDir
 
@@ -424,8 +429,13 @@ function Run-Compress($job, $src, $preset) {
     $weights = @{ encode = 0.9 }
     $report = { param([string]$phase, [double]$pct, [double]$fps, [string]$why)
         $left = $null
-        if ($phase -eq 'Encoding' -and $fps -gt 0) { $left = [long](($src.Frames * (1 - $pct / 100 / $weights.encode)) / $fps + $src.Size / 150MB + 60) }
-        Write-Status @{ state = 'run'; phase = $phase; percent = [int][math]::Min(99, $pct); secsLeft = $left; paused = $why; dest = $dest }
+        if ($phase -eq 'Encoding' -and $fps -gt 0) {
+            $left = ($src.Frames * (1 - $pct / 100 / $weights.encode)) / $fps + $src.Size / 150MB + 60
+            # episodes still to do after this one, at this one's speed
+            if ($script:RemainingVideoSecs) { $left += $script:RemainingVideoSecs * $src.Fps / $fps + 90 * $script:RemainingItems }
+            $left = [long]$left
+        }
+        Write-Status @{ state = 'run'; phase = "$($script:PhasePrefix)$phase"; percent = [int][math]::Min(99.0, (& $script:MapPct $pct)); secsLeft = $left; paused = $why; dest = $dest }
     }
 
     $rpu = Join-Path $script:Work 'rpu.bin'
@@ -489,6 +499,86 @@ function Run-Compress($job, $src, $preset) {
     @{ bytes = $len; srcBytes = $src.Size; dest = $dest; destDir = $destDir; dv = $expectDv }
 }
 
+# ---------------------------------------------------------------- seasons and shows
+# $job.items: one entry per episode { source, sourcePlex, ep = 'S02E05', epTitle, durationMs, size }.
+# Episodes are done one after another; one that fails is reported and the rest carry on. Stopping from
+# the dashboard stops the lot.
+
+$script:MapPct = { param($p) $p }      # progress of the current file -> progress of the whole job
+$script:PhasePrefix = ''
+$script:RemainingVideoSecs = 0; $script:RemainingItems = 0
+
+function Episode-Target($job, $it, $src) {
+    $show = Safe-Name "$($job.title)$(if ($job.year) { " ($($job.year))" })"
+    @{ dir = [IO.Path]::GetDirectoryName($src.Path); base = "$show - $($it.ep)"; title = "$($job.title) - $($it.ep)$(if ($it.epTitle) { " - $($it.epTitle)" })" }
+}
+
+function Run-Episodes($job, $preset) {
+    $items = @($job.items); $n = $items.Count
+    $baseWork = $script:Work
+    $done = 0; $bytes = 0L; $srcBytes = 0L; $failed = New-Object Collections.Generic.List[string]
+    for ($i = 0; $i -lt $n; $i++) {
+        $it = $items[$i]
+        $script:MapPct = [scriptblock]::Create("param(`$p) ($i + `$p / 100) / $n * 100")
+        $script:PhasePrefix = "Episode $($i + 1) of $n ($($it.ep)): "
+        $rest = @($items | Select-Object -Skip ($i + 1))
+        $script:RemainingVideoSecs = ($rest | ForEach-Object { [double]$_.durationMs / 1000 } | Measure-Object -Sum).Sum
+        $script:RemainingItems = $rest.Count
+        $script:Work = Join-Path $baseWork "ep$i"
+        New-Item -ItemType Directory -Force -Path $script:Work | Out-Null
+        try {
+            if (Test-Path -LiteralPath $script:CancelFile) { throw 'Cancelled from the dashboard.' }
+            if (-not (Test-Path -LiteralPath $it.source -PathType Leaf)) { throw "can't open $($it.source)" }
+            $src = Get-SourceInfo $it.source
+            $why = Preset-Problem $preset $src
+            if ($why) { throw $why }
+            $r = Run-Compress $job $src $preset (Episode-Target $job $it $src)
+            $done++; $bytes += $r.bytes; $srcBytes += $src.Size
+            Wlog "$($it.ep) done: $($src.Size) -> $($r.bytes) bytes"
+        } catch {
+            if ($_.Exception.Message -like 'Cancelled*') { throw }
+            $failed.Add("$($it.ep): $($_.Exception.Message)"); Wlog "$($it.ep) FAILED: $($_.Exception.Message)"
+        } finally {
+            if ($script:Child -and -not $script:Child.HasExited) { try { $script:Child.Kill(); $script:Child.WaitForExit(30000) | Out-Null } catch { } }
+            Remove-Item -LiteralPath $script:Work -Recurse -Force -ErrorAction SilentlyContinue
+            $script:Work = $baseWork
+        }
+    }
+    if (-not $done) { throw "No episode could be compressed. First problem: $($failed[0])" }
+    @{ bytes = $bytes; srcBytes = $srcBytes; episodes = $n; done = $done; failed = $failed.Count; problem = $(if ($failed.Count) { $failed[0] } else { '' }) }
+}
+
+# Samples one spot in up to three episodes (first, middle, last) and scales up to the whole list by running time
+function Estimate-Episodes($job, $preset) {
+    $items = @($job.items); $n = $items.Count
+    $pick = @(@(0, [math]::Floor($n / 2), ($n - 1)) | Select-Object -Unique)
+    $totalSecs = ($items | ForEach-Object { [double]$_.durationMs / 1000 } | Measure-Object -Sum).Sum
+    $sampledSecs = 0.0; $predBytes = 0.0; $predTime = 0.0; $vmafs = @(); $fpss = @()
+    $baseWork = $script:Work
+    for ($k = 0; $k -lt $pick.Count; $k++) {
+        $it = $items[$pick[$k]]
+        $script:MapPct = [scriptblock]::Create("param(`$p) ($k + `$p / 100) / $($pick.Count) * 100")
+        $script:PhasePrefix = "Sampling $($it.ep): "
+        $script:Work = Join-Path $baseWork "ep$k"; New-Item -ItemType Directory -Force -Path $script:Work | Out-Null
+        try {
+            $src = Get-SourceInfo $it.source
+            $why = Preset-Problem $preset $src; if ($why) { throw $why }
+            $r = Run-Estimate $job $src $preset 1
+            $sampledSecs += $src.Duration; $predBytes += $r.bytes; $predTime += $r.secs; $fpss += $r.fps
+            if ($r.vmaf) { $vmafs += $r.vmaf }
+        } catch {
+            if ($_.Exception.Message -like 'Cancelled*') { throw }
+            $firstProblem = "$($it.ep): $($_.Exception.Message)"; Wlog "Sample of $firstProblem"   # try the other episodes
+        } finally { Remove-Item -LiteralPath $script:Work -Recurse -Force -ErrorAction SilentlyContinue; $script:Work = $baseWork }
+    }
+    if (-not $sampledSecs) { throw "None of the sampled episodes could be read. $firstProblem" }
+    $scale = if ($totalSecs) { $totalSecs / $sampledSecs } else { $n / $pick.Count }
+    @{ bytes = [long]($predBytes * $scale); secs = [long]($predTime * $scale); episodes = $n
+        vmaf = $(if ($vmafs.Count) { [math]::Round(($vmafs | Measure-Object -Average).Average, 1) } else { $null })
+        fps = $(if ($fpss.Count) { [math]::Round(($fpss | Measure-Object -Average).Average, 1) } else { $null })
+        srcBytes = [long](($items | ForEach-Object { [double]$_.size } | Measure-Object -Sum).Sum) }
+}
+
 # ---------------------------------------------------------------- main
 
 if (-not $JobFile) { return }   # dot-sourced by tests
@@ -516,6 +606,13 @@ Wlog "Worker ${PID}: $($job.mode) '$($job.title)' preset $($job.preset) audio $(
 try {
     $preset = $Presets[$job.preset]
     if (-not $preset) { throw "Unknown preset '$($job.preset)'." }
+    if ($job.items) {
+        Wlog "$(@($job.items).Count) episodes: $((@($job.items) | ForEach-Object { $_.ep }) -join ', ')"
+        $result = if ($job.mode -eq 'estimate') { Estimate-Episodes $job $preset } else { Run-Episodes $job $preset }
+        Write-Status @{ state = 'done'; percent = 100; result = $result }
+        Wlog "Done: $($result | ConvertTo-Json -Compress)"
+        return
+    }
     if (-not (Test-Path -LiteralPath $job.source -PathType Leaf)) { throw "Can't open $($job.source)" }
     $src = Get-SourceInfo $job.source
     $why = Preset-Problem $preset $src

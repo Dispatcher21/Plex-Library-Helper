@@ -47,7 +47,7 @@ export function demoSnapshots() {
   const addEps = (showRk, title, season, n, base, gb, res, extraFile) => {
     for (let i = 1; i <= n; i++) {
       eps.push({ ratingKey: String(rk++), grandparentRatingKey: showRk, grandparentTitle: title, parentIndex: season, index: i, title: `Episode ${i}`, addedAt: 1.7e9 + rk,
-        Media: [media(`${base}\\Season ${season}\\${title} - S${String(season).padStart(2, '0')}E${String(i).padStart(2, '0')}${extraFile || ''}.mkv`, gb, res, 2500, 'aac', 6)] });
+        Media: [media(`${base}\\Season ${season}\\${title} - S${String(season).padStart(2, '0')}E${String(i).padStart(2, '0')}${extraFile || ''}.mkv`, gb, res, 2500, 'aac', 6, { duration: 22 * 60000 })] });
     }
   };
   addEps('s1', 'Futurama', 1, 9, `${E}\\Shows\\Futurama (1999)`, 0.17, '1080');

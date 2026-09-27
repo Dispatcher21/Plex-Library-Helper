@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.3'
+$Version = '0.3.4'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -503,6 +503,7 @@ function Parse-CompressOptions([string]$info) {
     $r = @(([string]$o['r']).ToLower() -split '\+' | Where-Object { $_ })
     [ordered]@{
         preset = [string]$o['p']
+        scope  = [string]$o['s']   # shows only: S02 or all
         audio  = $(if ($o['a'] -eq 'small') { 'small' } else { 'keep' })
         rules  = [ordered]@{ plex = $r -contains 'plex'; plexall = $r -contains 'plexall'; game = $r -contains 'game'; idle = $r -contains 'idle'; night = $r -contains 'night' }
     }
@@ -567,7 +568,7 @@ function Send-Ntfy([string]$title, [string]$message, [string]$tags = '', [string
 
 # Title, message and icon for a finished or failed job; $null when there's nothing to say
 function Job-Notification($jf, [string]$state, $result, [string]$errorText) {
-    $name = "$($jf.title)$(if ($jf.year) { " ($($jf.year))" })"
+    $name = "$($jf.title)$(if ($jf.year) { " ($($jf.year))" })$(if ($jf.scope) { " - $(Scope-Name $jf.scope)" })"
     $preset = $PresetLabels[[string]$jf.preset]; if (-not $preset) { $preset = [string]$jf.preset }
     if ($state -eq 'fail') {
         if ($errorText -match 'Stopped from the dashboard|Cancelled from the dashboard') { return $null }   # you did that yourself
@@ -578,7 +579,12 @@ function Job-Notification($jf, [string]$state, $result, [string]$errorText) {
     $pct = if ($src) { ' ({0:N0}%)' -f ($out / $src * 100) } else { '' }
     if ($jf.mode -eq 'estimate') {
         $q = if ($result.vmaf) { ", quality $($result.vmaf)/100" } else { '' }
-        return @{ title = "Estimate ready: $name"; message = "$($preset): about $(Fmt-GB $out)$pct of $(Fmt-GB $src), about $(Fmt-Time $result.secs) to encode$q."; tags = 'bar_chart'; priority = 'default' }
+        $eps = if ($result.episodes) { " for $($result.episodes) episodes" } else { '' }
+        return @{ title = "Estimate ready: $name"; message = "$($preset)$($eps): about $(Fmt-GB $out)$pct of $(Fmt-GB $src), about $(Fmt-Time $result.secs) to encode$q."; tags = 'bar_chart'; priority = 'default' }
+    }
+    if ($result.episodes) {
+        $bad = if ($result.failed) { " $($result.failed) not done: $($result.problem)" } else { '' }
+        return @{ title = "Compressed: $name"; message = "$($preset): $($result.done) of $($result.episodes) episodes, $(Fmt-GB $src) $([char]0x2192) $(Fmt-GB $out)$pct.$bad"; tags = $(if ($result.failed) { 'warning' } else { 'white_check_mark' }); priority = $(if ($result.failed) { 'high' } else { 'default' }) }
     }
     @{ title = "Compressed: $name"; message = "$($preset): $(Fmt-GB $src) $([char]0x2192) $(Fmt-GB $out)$pct. It's next to the original in Plex; choose Replace original when you're happy with it."; tags = 'white_check_mark'; priority = 'default' }
 }
@@ -624,6 +630,56 @@ function Pause-Notification($jf, [string]$kind, $st) {
     @{ title = "Resumed: $name"; message = "$preset $what carrying on from $([int]$st.percent)% after $(Fmt-Time $jf.pausedFor) paused.$left"; tags = 'arrow_forward'; priority = 'low' }
 }
 
+# ---------------------------------------------------------------- compressing a season or show
+# Label on the show: pldc:<id>:c|ce:sh<showKey>:queued:p=..;a=..;r=..;s=S02|all. The worker gets the list
+# of episode files: per episode the biggest copy that isn't already compressed; episodes that already have
+# a compressed copy are skipped. Files can be on this PC or on any share it can read.
+
+function Scope-Name([string]$s) { if ($s -eq 'all') { 'whole show' } elseif ($s -match '^S(\d+)$') { if ([int]$Matches[1] -eq 0) { 'Specials' } else { "Season $([int]$Matches[1])" } } else { $s } }
+
+function Show-CompressItems($showKey, [string]$scope, [hashtable]$shares) {
+    $items = @(); $already = 0; $unreadable = 0
+    foreach ($ep in (Show-Episodes $showKey | Sort-Object { [int]$_.parentIndex }, { [int]$_.index })) {
+        if ($scope -ne 'all' -and ('S{0:00}' -f [int]$ep.parentIndex) -ne $scope) { continue }
+        $media = @($ep.Media | Where-Object { $_ })
+        if (@($media | Where-Object { @($_.Part | Where-Object { $_.file -match ' - Compressed (4K|1080p)\b' }).Count }).Count) { $already++; continue }
+        $m = $media | Where-Object { @($_.Part).Count -eq 1 } | Sort-Object { [double]@($_.Part)[0].size } -Descending | Select-Object -First 1
+        if (-not $m) { $unreadable++; continue }
+        $part = @($m.Part)[0]
+        $src = To-Local $part.file $shares
+        if (-not $src -and $part.file -match '^\\\\' -and (Test-Path -LiteralPath $part.file -PathType Leaf)) { $src = $part.file }
+        if (-not $src) { $unreadable++; continue }
+        $items += [ordered]@{ source = $src; sourcePlex = $part.file; ep = ('S{0:00}E{1:00}' -f [int]$ep.parentIndex, [int]$ep.index); epTitle = $ep.title
+            durationMs = $(if ($m.duration) { [double]$m.duration } else { [double]$ep.duration }); size = [double]$part.size; mediaId = [string]$m.id }
+    }
+    @{ items = $items; already = $already; unreadable = $unreadable }
+}
+
+function Start-ShowCompress($w, $j, [string]$mode, [hashtable]$shares, [string]$jobFile) {
+    $opt = Parse-CompressOptions $j.Info
+    $scope = if ($opt.scope) { $opt.scope } else { 'all' }
+    $found = Show-CompressItems $w.Item.ratingKey $scope $shares
+    if (-not $found.items.Count) {
+        $why = if ($found.already) { "every episode in the $(Scope-Name $scope) already has a compressed copy" } else { "none of the episode files can be read from $env:COMPUTERNAME" }
+        Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' "Nothing to do: $why"); return
+    }
+    $jf = [ordered]@{
+        jobId = $j.JobId; mode = $mode; action = $j.Action; mediaId = $j.MediaId; preset = $opt.preset; audio = $opt.audio; rules = $opt.rules
+        scope = $scope; items = $found.items; skipped = $found.already; unreadable = $found.unreadable
+        source = $found.items[0].source; sourcePlex = $found.items[0].sourcePlex; section = $w.Section; ratingKey = [string]$w.Item.ratingKey
+        title = $w.Item.title; year = $w.Item.year
+        workDir = $script:Cfg.compress.workDir; tools = $script:Cfg.compress.tools; nightWindow = $script:Cfg.compress.nightWindow
+        plexUrl = $script:Cfg.serverUrl; tokenProtected = $script:Cfg.tokenProtected
+        created = (Get-Date).ToString('o'); workerPid = $null; lastInfo = ''; lastUpdate = $null
+    }
+    Write-Json $jobFile $jf
+    Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'run' "0;;Starting;$($opt.preset);$scope")
+    $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Root 'compress.ps1')`" -JobFile `"$jobFile`""
+    $jf.workerPid = $p.Id
+    Write-Json $jobFile $jf
+    Log "Job $($j.JobId): $mode '$($w.Item.title)' $(Scope-Name $scope), $($found.items.Count) episodes ($($found.already) already compressed, $($found.unreadable) unreadable), preset $($opt.preset) (worker $($p.Id))"
+}
+
 function Process-CompressJob($w, [hashtable]$shares) {
     $j = $w.Job
     $age = (Get-Date) - (Job-Time $j.JobId)
@@ -642,6 +698,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
         if (-not $mode) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' "Unknown action '$($j.Action)'"); return }
         if (Test-Path -LiteralPath $jobFile) { return }                 # already claimed; label update pending
         if (@(Running-Workers $mode).Count) { return }                 # one compress and one estimate at a time
+        if ($w.IsShow) { Start-ShowCompress $w $j $mode $shares $jobFile; return }
         $media = @($w.Item.Media) | Where-Object { [string]$_.id -eq $j.MediaId } | Select-Object -First 1
         if (-not $media) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Plex no longer lists this copy'); return }
         $part = @($media.Part)[0]
@@ -688,12 +745,18 @@ function Process-CompressJob($w, [hashtable]$shares) {
     if ($st -and $st.state -eq 'done') {
         $r = $st.result
         if ($mode -eq 'estimate') {
-            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes }
+            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes; c = $r.episodes; w = $jf.scope }
+        } elseif ($jf.items) {
+            # c = episodes in the job, n = compressed, f = failed, w = season/show, x = first problem (last: may be cut)
+            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; c = $r.episodes; n = $r.done; f = $r.failed; w = $jf.scope; x = ([string]$r.problem -replace '[;=+]', ' ') }
         } else {
             $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }) }
         }
         Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'done' $info)
-        if ($mode -eq 'compress') {
+        if ($mode -eq 'compress' -and $jf.items) {
+            foreach ($d in @($jf.items | ForEach-Object { [IO.Path]::GetDirectoryName($_.sourcePlex) } | Select-Object -Unique)) { Refresh-Plex $w.Section $d }
+            Log ("Job {0} done: '{1}' {2}: {3} of {4} episodes, {5:N1} GB -> {6:N1} GB" -f $j.JobId, $jf.title, (Scope-Name $jf.scope), $r.done, $r.episodes, ($r.srcBytes / 1GB), ($r.bytes / 1GB))
+        } elseif ($mode -eq 'compress') {
             Refresh-Plex $w.Section ([IO.Path]::GetDirectoryName($jf.sourcePlex))
             Log ("Job {0} done: '{1}' {2:N1} GB -> {3:N1} GB at {4}" -f $j.JobId, $jf.title, ($r.srcBytes / 1GB), ($r.bytes / 1GB), $r.dest)
         } else { Log "Job $($j.JobId) estimate done: $info" }
@@ -713,6 +776,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
     if ($st) {
         $what = if ($st.paused) { "paused: $($st.paused)" } else { $st.phase }
         $info = '{0};{1};{2};{3}' -f [int]$st.percent, $(if ($st.secsLeft) { [long]$st.secsLeft } else { '' }), $what, $jf.preset
+        if ($jf.scope) { $info += ";$($jf.scope)" }
         $pausedChanged = ([string]$jf.lastInfo -split ';')[2] -ne $what
         $due = -not $jf.lastUpdate -or ((Get-Date) - [datetime]$jf.lastUpdate).TotalSeconds -ge 60
         $changed = $false
