@@ -37,9 +37,9 @@ export function presetFits(p, v) {
   return h >= p.height * 0.7;
 }
 
-// Options travel in the queued label: p=4kh;a=keep;r=plex+game
-export function encodeOptions({ preset, audio, rules }) {
-  return `p=${preset};a=${audio === 'small' ? 'small' : 'keep'};r=${rules.join('+')}`;
+// Options travel in the queued label: p=4kh;a=keep;r=plex+game[;v=av1]
+export function encodeOptions({ preset, audio, rules, codec }) {
+  return `p=${preset};a=${audio === 'small' ? 'small' : 'keep'};r=${rules.join('+')}${codec === 'av1' ? ';v=av1' : ''}`;
 }
 export function decodeInfo(info) {
   const o = {};
@@ -72,13 +72,17 @@ export function fmtDuration(secs) {
 
 // Before an estimate: rough size/time from the test encodes. A copy that's already an efficient encode
 // can't shrink to the preset's usual bitrate, so the video part never goes above what the copy has now.
-export function roughGuess(p, v, audio = 'keep') {
+function split(v, audio) {
   const secs = (v.duration || 0) / 1000;
-  if (!secs) return { bytes: v.size * 0.3, secs: null, little: false };
-  const totalMbps = (v.size * 8) / secs / 1e6;
+  const totalMbps = secs ? (v.size * 8) / secs / 1e6 : 0;
   const audioMbps = Math.min(audio === 'small' ? 0.64 : v.lossless ? 5 : 0.8, totalMbps * 0.4);
-  const srcVideoMbps = Math.max(totalMbps * 0.6, totalMbps - audioMbps);
-  const videoMbps = Math.min(p.mbps, srcVideoMbps * 0.9);
+  return { secs, audioMbps, srcVideoMbps: Math.max(totalMbps * 0.6, totalMbps - audioMbps) };
+}
+
+export function roughGuess(p, v, audio = 'keep', codec = 'hevc') {
+  const { secs, audioMbps, srcVideoMbps } = split(v, audio);
+  if (!secs) return { bytes: v.size * 0.3, secs: null, little: false };
+  const videoMbps = Math.min(p.mbps * (codec === 'av1' ? 0.75 : 1), srcVideoMbps * 0.9);
   const bytes = Math.min(v.size, ((videoMbps + audioMbps) * 1e6 * secs) / 8);   // never more than it is now
   // 1080p presets were timed turning 4K HDR into 1080p SDR on the processor; an HD source needs no conversion
   // and stays on the graphics card, which is several times faster (rough figure until measured)
@@ -104,4 +108,50 @@ export function qualityWords(vmaf) {
   if (q >= 90) return 'good: small differences up close';
   if (q >= 85) return 'noticeably softer';
   return 'visibly worse than the original (often a grainy film)';
+}
+
+// ---------- Which PC does it, and how long it takes there (from each helper's benchmark) ----------
+// Mirrors the helper's Choose-Encoder (helper/encoders.ps1): graphics card first; 4K Extreme prefers the
+// processor's efficient encoder where processor jobs are allowed; encoders the benchmark found far too slow
+// for that size of film are left out.
+
+export const ENCODERS = {
+  amf: { label: 'AMD graphics', codec: 'hevc' }, nvenc: { label: 'NVIDIA graphics', codec: 'hevc' }, qsv: { label: 'Intel graphics', codec: 'hevc' },
+  x265: { label: 'processor (x265)', codec: 'hevc', cpu: true }, x265slow: { label: 'processor (x265 slow)', codec: 'hevc', cpu: true, efficient: true },
+  av1_amf: { label: 'AMD graphics, AV1', codec: 'av1' }, av1_nvenc: { label: 'NVIDIA graphics, AV1', codec: 'av1' }, av1_qsv: { label: 'Intel graphics, AV1', codec: 'av1' },
+  svtav1: { label: 'processor (SVT-AV1)', codec: 'av1', cpu: true, efficient: true },
+};
+const LEVELS = ['extreme', 'high', 'normal', 'saver'];
+export function presetLevel(id) {
+  const m = /^(4k|1080)([xhns])$/.exec(id || ''); if (!m) return null;
+  return { tier: m[1], level: { x: 'extreme', h: 'high', n: 'normal', s: 'saver' }[m[2]] };
+}
+
+export function pickEncoder(caps, level, tier, codec = 'hevc') {
+  const cal = caps.calibration || {};
+  const mine = (caps.encoders || []).filter((id) => ENCODERS[id]?.codec === codec && !cal[id]?.[tier]?.skip);
+  const hw = mine.filter((id) => !ENCODERS[id].cpu);
+  const cpu = mine.filter((id) => ENCODERS[id].cpu).sort((a, b) => (ENCODERS[b].efficient ? 1 : 0) - (ENCODERS[a].efficient ? 1 : 0));
+  if (level === 'extreme' && caps.allowCpu && cpu.length) return cpu[0];
+  if (hw.length) return hw[0];
+  if (caps.allowCpu && cpu.length) return cpu.find((id) => !ENCODERS[id].efficient) || cpu[0];
+  return null;
+}
+
+// One line per compressing PC: which encoder it would use and, once it has been benchmarked, size and time
+export function pcGuesses(p, v, audio, codec, capsList) {
+  const lv = presetLevel(p.id); if (!lv) return [];
+  const { secs, audioMbps, srcVideoMbps } = split(v, audio);
+  return capsList.map((c) => {
+    const enc = pickEncoder(c, lv.level, lv.tier, codec);
+    if (!enc) return { pc: c.pc, enc: null };
+    const m = c.calibration?.[enc]?.[lv.tier]; const i = (c.levels || LEVELS).indexOf(lv.level);
+    if (!m || !m.kbps || !secs) return { pc: c.pc, enc, measured: false };
+    const videoMbps = Math.min(m.kbps[i] / 1000, srcVideoMbps * 0.9);
+    const bytes = Math.min(v.size, ((videoMbps + audioMbps) * 1e6 * secs) / 8);
+    // 1080p from a 4K film also scales (and tone-maps HDR) on the processor, which the 1080p benchmark didn't
+    let fps = m.fps;
+    if (lv.tier === '1080' && (v.height || 0) > 1100) fps = Math.min(fps, (c.threads || 8) * 1.5);
+    return { pc: c.pc, enc, measured: true, bytes, secs: (secs * 23.976) / Math.max(0.05, fps), fps, little: bytes > v.size * 0.7 };
+  });
 }

@@ -1,10 +1,11 @@
-<#
+﻿<#
   Plex Library Helper - live channel, pause switch, _TO_DELETE on the dashboard, tray status
   (loaded by library-helper.ps1; uses its Send-Ntfy, Log, Fmt-GB, Running-Workers, Get-TrashBatches ...)
 
   The dashboard and this helper talk through the private ntfy topic:
     <topic>-status  helper -> dashboard   {"kind":"helper"|"trash"|"trashResult"|"rip", "pc":..., ...}
-    <topic>-cmd     dashboard -> helper   {"cmd":"pause"|"emptytrash"|"autocompress", "pc":..., ...}
+    <topic>-status  also {"kind":"caps"}: what this PC can compress with and its benchmark results (bench.ps1)
+    <topic>-cmd     dashboard -> helper   {"cmd":"pause"|"emptytrash"|"autocompress"|"benchmark", "pc":..., ...}
   Every PC's helper reads the same command topic and only acts on commands naming it.
 
   Pausing: the file jobs\PAUSED. While it exists no compression or estimate starts, and a running one is
@@ -65,6 +66,14 @@ function Read-Commands {
 function Handle-Command($c, [datetime]$sent, [string]$msgId) {
     switch ([string]$c.cmd) {
         'autocompress' { Handle-RipCommand $c }
+        'benchmark' {
+            if ($c.pc -ne $env:COMPUTERNAME) { return }
+            if ((Done-Requests) -contains $msgId) { return }
+            Remember-Request $msgId
+            if (((Get-Date) - $sent).TotalMinutes -gt 10) { return }                # an old request replayed to a restarted helper
+            if ($c.stop) { Stop-Benchmark 'the dashboard' } elseif (Compress-On) { Request-Benchmark 'the dashboard' }
+            $script:LastCapsMsg.sig = ''
+        }
         'pause' {
             if ($c.pc -and $c.pc -ne $env:COMPUTERNAME) { return }
             if ($sent -lt $script:LiveStarted.AddSeconds(-60)) { return }   # from before this helper started

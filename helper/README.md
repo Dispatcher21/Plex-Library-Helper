@@ -7,8 +7,11 @@ the actual work. **It's the same download for every PC**; setup asks what each P
 **What it does**
 - **Quarantine** (every PC): moves a copy's files into `_TO_DELETE\<date>\` on the same drive
   (for example `E:\_TO_DELETE\2026-09-26\...`).
-- **Compress** (only the PC you say yes on, which needs an AMD Radeon graphics card): makes a smaller
-  copy of a movie and adds it next to the original.
+- **Compress** (every PC you say yes on): makes a smaller copy of a movie and adds it next to the original.
+  It uses the graphics card when there is a suitable one (AMD, NVIDIA or Intel, including the Intel
+  graphics in small PCs like an N100 file server) and otherwise the processor, which is much slower. Whichever
+  PC that can do a job is free first takes it, so a file server can work through the queue while your main
+  PC is busy.
 
 **What it never does:** delete anything, change an original when compressing, touch files that aren't
 on this PC's drives or your shares, move a drive, share or category folder (like `E:\Movies`) as a
@@ -20,10 +23,11 @@ and to plex.tv.
 1. Unzip the download anywhere that stays put (for example `Documents\Plex Library Helper`).
 2. Double-click **`Set up Plex Library Helper.cmd`**. It:
    - signs in to your Plex account: a Plex page opens, approve *Plex Library Helper*;
-   - asks **"Use this PC for encoding / compression?"** Say yes only on the PC with the AMD Radeon
-     graphics card. It then offers to install what compression needs (ffmpeg, MKVToolNix, and
-     dovi_tool for Dolby Vision; each only if you say yes) and asks for a work folder. A PC without an
-     AMD card skips this and just does quarantines;
+   - asks **"Use this PC for encoding / compression?"** It then offers to install what compression needs
+     (ffmpeg, MKVToolNix, and dovi_tool for Dolby Vision; each only if you say yes), tests which encoders
+     work on this PC, asks **"Should this PC take processor-only jobs too?"** (4K Extreme and AV1 without
+     a graphics AV1 encoder; very slow on small PCs) and asks for a work folder. Say no to do only
+     quarantines on this PC;
    - on the compressing PC, asks **"Send phone notifications?"**: it makes a private ntfy topic
      name, shows it, and can send a test message (see below);
    - starts the helper now and whenever you sign in to Windows.
@@ -40,7 +44,7 @@ nothing, so the encode isn't left running unattended: let it finish or Stop it i
 
 The helper puts an icon in the Windows notification area (the ^ next to the clock): orange when idle,
 green while compressing or ripping, grey when paused, red if the helper isn't running. Hover for what it's
-doing; double-click to open the dashboard; right-click for **Pause all compressions / Resume**, Status,
+doing; double-click to open the dashboard; right-click for **Pause all compressions / Resume**, **Run benchmark**, Status,
 the log folder, Empty _TO_DELETE, Run setup again, Restart helper and Quit. If the helper ever stops without you choosing Quit,
 the tray starts it again after 2 minutes.
 
@@ -72,6 +76,28 @@ by itself while someone is watching Plex or a full-screen game runs (you choose 
 `jobs\<job>.log`. The original is never changed: the compressed copy is added next to it, checked, and
 replacing the original is a separate quarantine you choose in the dashboard.
 
+## Benchmark (measuring each PC)
+
+Encoders differ a lot: the same setting gives a different quality and size on an AMD, NVIDIA or Intel
+graphics card or on the processor, and speed depends on the PC. So each compressing PC measures its own
+encoders on two of your films (a 4K one and a 1080p one, preferring disc rips on its own drives): short
+samples at five settings each, scored for quality (VMAF, the measure streaming services use), size and speed.
+From that it works out the setting that reaches each quality level on this PC (4K High = VMAF 95, Normal
+93.5, Data Saver 90, Extreme 96.5) and uses it for every job. A processor encoder that manages less than
+0.6 frames a second on 4K is marked too slow there and not used for 4K.
+
+- It runs **by itself** the first time a PC has encoders it hasn't measured, once nothing else is running
+  and nobody has used the PC for 10 minutes; also when a new encoder appears (at most once a week).
+- **Run it yourself** from the tray menu, setup, or the dashboard (Jobs > the PC > Run benchmark). It waits
+  for running jobs to finish and holds new ones until it's done: about 20-60 minutes on a gaming PC,
+  longer on a small one. It pauses for Plex streams and games like any job; Stop in the same places.
+- The results go to the dashboard, which shows each PC's encoders and speeds and, in Compress, the size
+  and time **on each PC** for every quality level. Your phone gets a short summary when it finishes.
+
+**AV1** (Compress > Video format) makes files about a quarter smaller again at the same quality, but needs a
+newer TV or player, and Dolby Vision becomes HDR10. Graphics cards from AMD RX 7000, NVIDIA RTX 40 and Intel
+Arc up encode it quickly; otherwise it's done on the processor (SVT-AV1, slow).
+
 ## Phone notifications
 
 When a compression or estimate finishes or fails, the helper sends a notification to your phone
@@ -98,7 +124,9 @@ topic name private: anyone who knows it can read the messages. Run setup again t
 | File | What it's for |
 |---|---|
 | `library-helper.ps1` | The helper itself |
-| `compress.ps1` | Does one compression (started by the helper) |
+| `compress.ps1` | Does one compression, estimate or benchmark (started by the helper) |
+| `encoders.ps1` | The encoders it knows (AMD, NVIDIA, Intel graphics; x265, SVT-AV1 on the processor) and how it picks one |
+| `bench.ps1` | The benchmark: which films, when it runs, saving the results, telling the dashboard |
 | `install-helper.ps1` / `uninstall-helper.ps1` | Add it to / remove it from Windows startup |
 | `config.json` | Created by setup: your server and Plex sign-in (encrypted for your Windows user), compression settings |
 | `logs\helper-YYYYMMDD.log` | Everything it did, one file per day |

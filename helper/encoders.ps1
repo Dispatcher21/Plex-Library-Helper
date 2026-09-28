@@ -1,4 +1,4 @@
-<#
+﻿<#
   Plex Library Helper - the encoders it knows (loaded by library-helper.ps1 and compress.ps1)
 
   Each encoder: which ffmpeg encoder, how frames are decoded for it, its quality setting (lower number =
@@ -75,7 +75,9 @@ function Choose-Encoder($compressCfg, [string]$level, [string]$tier, [string]$co
     $avail = @($compressCfg.encoders | Where-Object { $_ })   # (@($null) would count as one)
     if (-not $avail.Count) { $avail = @('amf', 'x265', 'x265slow') }   # set up before encoders were tested (the owner's AMD PC)
     $allowCpu = $compressCfg.allowCpu -ne $false
-    $mine = @($avail | Where-Object { $Encoders[$_] -and $Encoders[$_].Codec -eq $codec })
+    $cal = $compressCfg.calibration
+    # the benchmark found some processor encoders far too slow here for this size of film: leave them out
+    $mine = @($avail | Where-Object { $Encoders[$_] -and $Encoders[$_].Codec -eq $codec -and -not ($cal -and $cal.$_ -and $cal.$_.$tier -and $cal.$_.$tier.skipped) })
     $hw = @($mine | Where-Object { $Encoders[$_].Kind -ne 'cpu' })
     $cpu = @($mine | Where-Object { $Encoders[$_].Kind -eq 'cpu' } | Sort-Object { -not $Encoders[$_].Efficient })
     $pick = $null
@@ -83,7 +85,6 @@ function Choose-Encoder($compressCfg, [string]$level, [string]$tier, [string]$co
     elseif ($hw.Count) { $pick = $hw[0] }
     elseif ($allowCpu -and $cpu.Count) { $pick = @($cpu | Where-Object { -not $Encoders[$_].Efficient })[0]; if (-not $pick) { $pick = $cpu[0] } }
     if (-not $pick) { return $null }
-    $cal = $compressCfg.calibration
     $q = $null
     if ($cal -and $cal.$pick -and $cal.$pick.$tier -and $cal.$pick.$tier.levels -and $null -ne $cal.$pick.$tier.levels.$level) { $q = [double]$cal.$pick.$tier.levels.$level }
     if ($null -eq $q) { $q = [double]$Encoders[$pick].Default[$level] }

@@ -506,10 +506,31 @@ function liveChanged() {
 
 function helperLine(h) {
   const stale = Date.now() - new Date(h.time).getTime() > 12 * 60000;   // helpers report at least every 5 min
-  const jobs = (h.jobs || []).map((j) => `${j.mode === 'estimate' ? 'estimating' : 'compressing'} ${esc(j.title)} ${j.percent}%${j.secsLeft ? ` (about ${cz.fmtDuration(j.secsLeft)} left)` : ''}${/^paused/.test(j.what || '') ? ` · ${esc(j.what)}` : ''}`);
+  const jobs = (h.jobs || []).map((j) => `${j.mode === 'estimate' ? 'estimating' : j.mode === 'benchmark' ? 'benchmark' : 'compressing'} ${j.mode === 'benchmark' ? '' : `${esc(j.title)} `}${j.percent}%${j.secsLeft ? ` (about ${cz.fmtDuration(j.secsLeft)} left)` : ''}${/^paused/.test(j.what || '') ? ` · ${esc(j.what)}` : ''}`);
   const doing = stale ? `not heard from since ${timeAgo(new Date(h.time).getTime())}` : jobs.length ? jobs.join(', ') : h.paused ? 'compressions paused' : 'idle';
   const btn = h.compress && !stale ? `<button class="btn small ${h.paused ? 'primary' : ''}" data-hpause="${esc(h.pc)}" data-on="${h.paused ? 0 : 1}">${h.paused ? 'Resume compressions' : 'Pause all compressions'}</button>` : '';
-  return `<div class="liverow"><span><b>${esc(h.pc)}</b> <span class="fine">helper ${esc(h.version || '?')}</span> · ${doing}</span>${btn}</div>`;
+  return `<div class="liverow"><span><b>${esc(h.pc)}</b> <span class="fine">helper ${esc(h.version || '?')}</span> · ${doing}</span>${btn}</div>${stale ? '' : capsLine(rips.caps(h.pc))}`;
+}
+
+// What a compressing PC can use, how fast each measured (from its benchmark), and the benchmark button
+function capsLine(cap) {
+  if (!cap?.compress) return '';
+  const cal = cap.calibration || {};
+  const tierName = (tr) => (tr === '4k' ? '4K' : '1080p');
+  const fps = (n) => (n >= 10 ? Math.round(n) : Number(n).toFixed(1));
+  const encs = (cap.encoders || []).filter((id) => cz.ENCODERS[id] && (!cz.ENCODERS[id].cpu || cap.allowCpu));
+  const parts = encs.map((id) => {
+    const t = ['4k', '1080'].filter((tr) => cal[id]?.[tr]).map((tr) => (cal[id][tr].skip ? `${tierName(tr)} too slow` : `${tierName(tr)} ${fps(cal[id][tr].fps)} fps`));
+    return `${esc(cz.ENCODERS[id].label)}${t.length ? ` (${t.join(', ')})` : ''}`;
+  });
+  const times = Object.values(cal).flatMap((tiers) => Object.values(tiers).map((m) => new Date(m.time).getTime())).filter(Boolean);
+  const b = cap.bench;
+  const bench = b?.state === 'running' ? `<b>benchmark ${b.percent}%</b>${/^paused/.test(b.what || '') ? ` · ${esc(b.what)}` : ''}`
+    : b?.state === 'waiting' ? 'benchmark starts when the running jobs finish'
+      : times.length ? `benchmarked ${timeAgo(Math.max(...times))}` : 'not benchmarked yet (runs by itself when the PC is idle)';
+  const btn = b?.state ? `<button class="btn small ghost" data-bench="${esc(cap.pc)}" data-bstop="1">Stop benchmark</button>`
+    : `<button class="btn small ghost" data-bench="${esc(cap.pc)}">${times.length ? 'Benchmark again' : 'Run benchmark'}</button>`;
+  return `<div class="liverow capsrow"><span class="fine">${parts.join(' · ') || 'no encoders found'}${cap.allowCpu ? '' : ' · no processor-only jobs'} · ${bench}</span>${btn}</div>`;
 }
 
 function trashLine(t) {
@@ -616,10 +637,10 @@ function jobDescription(j) {
     if (j.state === 'run') {
       const r = cz.parseRun(j.info);
       info = `${Math.round(r.percent)}%${r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : ''} · ${r.paused ? `paused: ${r.paused}` : r.what}`;
-    } else if (j.state === 'done' && j.action === 'ce') info = cz.estimateText(j.info, v);
+    } else if (j.state === 'done' && j.action === 'ce') info = cz.estimateText(j.info, v) + ranOn(cz.decodeInfo(j.info));
     else if (j.state === 'done') {
       const o = cz.decodeInfo(j.info);
-      info = o.c ? `${o.n} of ${o.c} episodes, ${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}${Number(o.f) ? `, ${o.f} not done: ${o.x}` : ''}; originals untouched`: `${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}, the original is untouched`;
+      info = (o.c ? `${o.n} of ${o.c} episodes, ${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}${Number(o.f) ? `, ${o.f} not done: ${o.x}` : ''}; originals untouched`: `${fmtSize(Number(o.s))} → ${fmtSize(Number(o.b))}, the original is untouched`) + ranOn(o);
     }
     else if (j.state === 'fail') info = j.info;
     return { what, where, info, percent: j.state === 'run' ? cz.parseRun(j.info).percent : null };
@@ -738,6 +759,13 @@ function showCopy(s, sel) {
   };
 }
 // Which season a compression job is for: queued labels say s=S02, running ones carry it in the progress,
+// Finished jobs from helper 0.3.9 say where they ran: m=<PC>;e=<encoder>[;v=av1]
+function ranOn(o) {
+  if (!o.m) return '';
+  const enc = cz.ENCODERS[o.e]?.label;
+  return ` · on ${o.m}${enc ? ` (${enc}${o.v === 'av1' && !/AV1/.test(enc) ? ', AV1' : ''})` : ''}`;
+}
+
 // finished ones say w=S02 (there s is the size of the originals)
 function jobScope(j) {
   if (j.state === 'run') return cz.parseRun(j.info).scope;
@@ -927,13 +955,13 @@ function openCompress(e, v) {
   const est = jobFor(v, 'ce'); const eo = est ? cz.decodeInfo(est.state === 'run' ? '' : est.info) : {};
   const want = eo.p || saved.preset;
   const preset = fits.find((p) => p.id === want)?.id || fits.find((p) => p.id === '4kn')?.id || fits.find((p) => p.id === '1080n')?.id || fits[0]?.id;
-  cctx = { e, v, preset, audio: eo.a || saved.audio || 'keep', rules: new Set(saved.rules || cz.RULES.filter((r) => r.on).map((r) => r.id)), error: '', busy: false };
+  cctx = { e, v, preset, audio: eo.a || saved.audio || 'keep', codec: eo.v === 'av1' || (!est && saved.codec === 'av1') ? 'av1' : 'hevc', rules: new Set(saved.rules || cz.RULES.filter((r) => r.on).map((r) => r.id)), error: '', busy: false };
   renderCompress();
   $('compress').showModal();
 }
 
-function dvLine(p, v) {
-  if (v.dv) return p.dv ? 'Keeps Dolby Vision' : 'Dolby Vision and HDR become normal colour (SDR)';
+function dvLine(p, v, codec = 'hevc') {
+  if (v.dv) return !p.dv ? 'Dolby Vision and HDR become normal colour (SDR)' : codec === 'av1' ? 'Dolby Vision becomes HDR10' : 'Keeps Dolby Vision';
   if (v.hdr) return p.height === 1080 ? 'HDR becomes normal colour (SDR)' : 'Keeps HDR';
   return '';
 }
@@ -942,10 +970,16 @@ function renderCompress() {
   const c = cctx; if (!c) return;
   const { e, v } = c;
   const p = cz.presetById(c.preset);
-  const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
+  const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules], codec: c.codec });
+  const pcs = rips.caps();   // compressing PCs that have reported what they can do
+  // Per preset: the quickest PC that has measured it, else the rough figure from the owner's test encodes
+  const guessFor = (q) => {
+    const m = cz.pcGuesses(q, v, c.audio, c.codec, pcs).filter((g) => g.measured).sort((a, b) => a.secs - b.secs)[0];
+    return m ? { ...m, where: m.enc && cz.ENCODERS[m.enc].cpu ? 'Processor' : 'Graphics card' } : { ...cz.roughGuess(q, v, c.audio, c.codec), where: q.where };
+  };
   // The latest estimate for exactly these settings
   const ests = state.jobs.filter((j) => j.kind === 'compress' && j.action === 'ce' && j.serverId === v.serverId && String(j.mediaId) === String(v.mediaId)).sort((a, b) => b.created - a.created);
-  const est = ests.find((j) => { const o = j.state === 'run' ? { p: cz.jobPreset(j) } : cz.decodeInfo(j.info); return o.p === c.preset && (!o.a || o.a === c.audio || j.state === 'run') && (!v.show || jobScope(j) === v.scope); });
+  const est = ests.find((j) => { const o = j.state === 'run' ? { p: cz.jobPreset(j) } : cz.decodeInfo(j.info); return o.p === c.preset && (!o.a || o.a === c.audio || j.state === 'run') && (j.state === 'run' || (o.v === 'av1' ? 'av1' : 'hevc') === c.codec) && (!v.show || jobScope(j) === v.scope); });
   const estRunning = est && ACTIVE.includes(est.state);
   let estHtml = '';
   if (est?.state === 'done') {
@@ -962,13 +996,19 @@ function renderCompress() {
     <div class="db">
       <h3 class="ch">Quality</h3>
       <div class="presets">${cz.PRESETS.map((q) => {
-        const fits = cz.presetFits(q, v); const g = cz.roughGuess(q, v, c.audio);
+        const fits = cz.presetFits(q, v); const g = guessFor(q);
         return `<label class="preset${fits ? '' : ' off'}${q.id === c.preset ? ' on' : ''}">
           <input type="radio" name="preset" value="${q.id}" ${q.id === c.preset ? 'checked' : ''} ${fits ? '' : 'disabled'}>
-          <div><div class="t">${esc(q.label)} <span class="b">${esc(q.where)}</span></div>
+          <div><div class="t">${esc(q.label)} <span class="b">${esc(g.where)}</span></div>
           <div class="m">${esc(q.note)}</div>
-          ${fits ? `<div class="m">${g.little ? '<b>Little to gain: this copy is already fairly compact.</b> ' : ''}Typically about ${fmtSize(g.bytes)} (${Math.round((g.bytes / v.size) * 100)}%)${g.secs ? ` · about ${cz.fmtDuration(g.secs)}` : ''}${dvLine(q, v) ? ` · ${esc(dvLine(q, v))}` : ''}</div>` : '<div class="m">Needs a bigger source than this copy.</div>'}</div></label>`;
+          ${fits ? `<div class="m">${g.little ? '<b>Little to gain: this copy is already fairly compact.</b> ' : ''}${g.measured ? 'About' : 'Typically about'} ${fmtSize(g.bytes)} (${Math.round((g.bytes / v.size) * 100)}%)${g.secs ? ` · about ${cz.fmtDuration(g.secs)}${g.measured && pcs.length > 1 ? ` on ${esc(g.pc)}` : ''}` : ''}${dvLine(q, v, c.codec) ? ` · ${esc(dvLine(q, v, c.codec))}` : ''}</div>` : '<div class="m">Needs a bigger source than this copy.</div>'}</div></label>`;
       }).join('')}</div>
+      ${p && pcs.length ? whichPcHtml(p, v, c, pcs) : ''}
+      <h3 class="ch">Video format</h3>
+      <div class="opts">
+        <label><input type="radio" name="codec" value="hevc" ${c.codec === 'hevc' ? 'checked' : ''}> HEVC (H.265) <span class="fine">plays on nearly everything; keeps Dolby Vision</span></label>
+        <label><input type="radio" name="codec" value="av1" ${c.codec === 'av1' ? 'checked' : ''}> AV1 <span class="fine">about a quarter smaller again at the same quality; needs a newer TV or player, and Dolby Vision becomes HDR10${pcs.length ? `. ${av1Text(pcs)}` : ''}</span></label>
+      </div>
       <h3 class="ch">Audio</h3>
       <div class="opts">
         <label><input type="radio" name="audio" value="keep" ${c.audio === 'keep' ? 'checked' : ''}> Keep all original audio <span class="fine">(${esc(fmtAudio(v) || 'as is')}, every language and commentary)</span></label>
@@ -977,7 +1017,7 @@ function renderCompress() {
       <h3 class="ch">When</h3>
       <div class="opts">${cz.RULES.map((r) => `<label><input type="checkbox" data-rule="${r.id}" ${c.rules.has(r.id) ? 'checked' : ''}> ${esc(r.label)}</label>`).join('')}</div>
       ${estHtml}
-      <p class="note">The Library Helper on the PC with the graphics card does the work (${helperLink()} if it isn't installed; answer yes to compression in its setup). The original is never changed: the compressed copy is added next to it, checked, and shows up in Plex as a second version. Replacing the original is a separate step afterwards. Grainy films shrink much less than the typical figures; <b>Estimate</b> encodes three short samples of this film (a few minutes) to tell you the real size, time and quality first.</p>
+      <p class="note">A PC with compression turned on in its Library Helper does the work: whichever one that can do it is free first (${helperLink()} if it isn't installed; answer yes to compression in its setup). The original is never changed: the compressed copy is added next to it, checked, and shows up in Plex as a second version. Replacing the original is a separate step afterwards. Grainy films shrink much less than the typical figures; <b>Estimate</b> encodes three short samples of this film (a few minutes) to tell you the real size, time and quality first.</p>
       ${c.error ? `<p class="error">${esc(c.error)}</p>` : ''}
       <div class="foot">
         <button class="btn" data-cest ${estRunning || c.busy || !p ? 'disabled' : ''}>${estRunning ? 'Estimating…' : est?.state === 'done' ? 'Estimate again' : 'Estimate first'}</button>
@@ -987,18 +1027,35 @@ function renderCompress() {
   $('compress-body').dataset.opts = opts;
 }
 
+// Which PCs could take the chosen preset, with what, and how long each would take
+function whichPcHtml(p, v, c, pcs) {
+  const rows = cz.pcGuesses(p, v, c.audio, c.codec, pcs).map((g) => {
+    const cap = pcs.find((x) => x.pc === g.pc); const busy = rips.helpers().find((h) => h.pc === g.pc)?.jobs?.some((j) => j.mode === 'compress');
+    const what = !g.enc ? `<span class="fine">can't: no ${c.codec === 'av1' ? 'AV1 encoder' : 'suitable encoder'}${cap?.allowCpu ? '' : ' (processor jobs are off there)'}</span>`
+      : `${esc(cz.ENCODERS[g.enc].label)} · ${g.measured ? `about ${fmtSize(g.bytes)} · about ${cz.fmtDuration(g.secs)} <span class="fine">(${g.fps >= 10 ? Math.round(g.fps) : g.fps.toFixed(1)} fps measured)</span>` : '<span class="fine">not benchmarked yet</span>'}${busy ? ' · <span class="fine">busy with another compression</span>' : ''}`;
+    return `<div class="liverow"><span><b>${esc(g.pc)}</b> · ${what}</span></div>`;
+  });
+  return `<div class="whichpc"><div class="fine">Which PC does ${esc(p.label)}: the first free one of these</div>${rows.join('')}</div>`;
+}
+function av1Text(pcs) {
+  const can = pcs.filter((x) => (x.encoders || []).some((id) => cz.ENCODERS[id]?.codec === 'av1' && (!cz.ENCODERS[id].cpu || x.allowCpu)));
+  if (!can.length) return 'None of your PCs can encode AV1 yet';
+  const gpu = can.filter((x) => x.encoders.some((id) => cz.ENCODERS[id]?.codec === 'av1' && !cz.ENCODERS[id].cpu));
+  return gpu.length ? `Graphics AV1 on ${gpu.map((x) => esc(x.pc)).join(', ')}` : `Only on the processor (slow) on ${can.map((x) => esc(x.pc)).join(', ')}`;
+}
+
 async function queueCompression(action) {
   const c = cctx; if (!c || c.busy) return;
   const p = cz.presetById(c.preset); if (!p) return;
   // First compression from this device: ask (once) whether to be notified when it's done. Has to happen
   // straight from the click, before anything is awaited, or browsers won't show the question.
   if (notify.permission() === 'default' && !notify.wanted()) notify.turnOn();
-  try { localStorage.setItem(CPREFS, JSON.stringify({ preset: c.preset, audio: c.audio, rules: [...c.rules] })); } catch { /* ignore */ }
+  try { localStorage.setItem(CPREFS, JSON.stringify({ preset: c.preset, audio: c.audio, codec: c.codec, rules: [...c.rules] })); } catch { /* ignore */ }
   c.busy = true; c.error = ''; renderCompress();
   try {
     if (c.v.missing || !c.v.checked) throw new Error('the file is missing or hasn\'t been checked yet');
-    const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules] });
-    if (state.demo) state.demoJobs.queueCompress(c.v, c.e, action, c.v.show ? `${opts};s=${c.v.scope}` : opts, cz.roughGuess(p, c.v, c.audio));
+    const opts = cz.encodeOptions({ preset: c.preset, audio: c.audio, rules: [...c.rules], codec: c.codec });
+    if (state.demo) state.demoJobs.queueCompress(c.v, c.e, action, c.v.show ? `${opts};s=${c.v.scope}` : opts, cz.roughGuess(p, c.v, c.audio, c.codec));
     else if (c.v.show) {
       const api = state.servers[c.v.serverId]?.api;
       if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
@@ -1206,6 +1263,7 @@ function bind() {
     const t = ev.target;
     if (t.name === 'preset') cctx.preset = t.value;
     else if (t.name === 'audio') cctx.audio = t.value;
+    else if (t.name === 'codec') cctx.codec = t.value;
     else if (t.dataset.rule) t.checked ? cctx.rules.add(t.dataset.rule) : cctx.rules.delete(t.dataset.rule);
     renderCompress();
   };
@@ -1215,6 +1273,15 @@ function bind() {
     if (hp) {
       hp.disabled = true; hp.textContent = 'Sending…';
       const cmd = { cmd: 'pause', pc: hp.dataset.hpause, on: hp.dataset.on === '1' };
+      try { if (state.demo) rips.demoCommand(cmd); else await rips.command(cmd); } catch (err) { alert(err.message); renderJobs(); }
+      return;
+    }
+    const bb = ev.target.closest('[data-bench]');
+    if (bb) {
+      const stop = bb.dataset.bstop === '1';
+      if (!stop && !confirm(`Benchmark the encoders on ${bb.dataset.bench}?\n\nIt measures quality, size and speed on a couple of your films (about 20-60 minutes), so that PC picks the right setting for each quality level and this dashboard can show real estimates. It waits for running jobs to finish, holds new ones until it's done, and pauses for Plex streams and games.`)) return;
+      bb.disabled = true; bb.textContent = 'Sending…';
+      const cmd = { cmd: 'benchmark', pc: bb.dataset.bench, stop };
       try { if (state.demo) rips.demoCommand(cmd); else await rips.command(cmd); } catch (err) { alert(err.message); renderJobs(); }
       return;
     }

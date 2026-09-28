@@ -30,17 +30,19 @@ let latest = null; let source = null; let onChange = () => {};
 export function status() { return latest; }
 
 // Everything else on the channel, newest per PC: what each helper is doing (kind 'helper'), what's waiting
-// in its _TO_DELETE ('trash'), and answers to 'empty' requests ('trashResult', by request id)
-const byPc = { helper: {}, trash: {} }; const results = {};
+// in its _TO_DELETE ('trash'), what it can compress with and its benchmark results ('caps'), and answers to
+// 'empty' requests ('trashResult', by request id)
+const byPc = { helper: {}, trash: {}, caps: {} }; const results = {};
 export function helpers() { return Object.values(byPc.helper).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function trashes() { return Object.values(byPc.trash).filter((t) => t.batches?.length).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function result(req) { return results[req] || null; }
+export function caps(pc) { return pc ? byPc.caps[pc] || null : Object.values(byPc.caps).filter((c) => c.compress).sort((a, b) => a.pc.localeCompare(b.pc)); }
 
 function take(msg) {
   if (msg?.event !== 'message') return;
   let s; try { s = JSON.parse(msg.message); } catch { return; }
   if (s?.kind === 'rip') { latest = { ...s, received: Date.now() }; onChange(latest); }
-  else if (s?.kind === 'helper' || s?.kind === 'trash') {
+  else if (s?.kind === 'helper' || s?.kind === 'trash' || s?.kind === 'caps') {
     const old = byPc[s.kind][s.pc];
     if (!old || new Date(s.time) >= new Date(old.time)) { byPc[s.kind][s.pc] = s; onChange(latest); }
   } else if (s?.kind === 'trashResult') { results[s.req] = s; onChange(latest); }
@@ -58,10 +60,17 @@ export function demoHelpers() {
   const now = new Date().toISOString(); const GB = 1024 ** 3;
   byPc.helper['GAMING-PC'] = { kind: 'helper', pc: 'GAMING-PC', version: '0.3.7', time: now, compress: true, paused: false, jobs: [{ title: 'Dune', mode: 'compress', preset: '4kh', percent: 37, secsLeft: 4200, what: 'Encoding' }] };
   byPc.helper['MEDIA-PC'] = { kind: 'helper', pc: 'MEDIA-PC', version: '0.3.7', time: now, compress: false, paused: false, jobs: [] };
+  const lv = ['extreme', 'high', 'normal', 'saver'];
+  byPc.caps['GAMING-PC'] = { kind: 'caps', pc: 'GAMING-PC', version: '0.3.9', time: now, compress: true, cpu: 'Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz', threads: 16, gpus: ['AMD Radeon RX 6750 XT'], encoders: ['amf', 'x265', 'x265slow', 'svtav1'], allowCpu: true, levels: lv,
+    calibration: { amf: { '4k': { fps: 37, q: [20.4, 22.6, 24.5, 27.3], kbps: [27500, 19200, 14600, 9400], src: 62000, time: now }, 1080: { fps: 140, q: [19, 21.5, 23.5, 27], kbps: [9800, 6900, 5200, 3300], src: 28000, time: now } },
+      x265slow: { '4k': { fps: 1.1, q: [16.8, 18.9, 20.7, 24.1], kbps: [16000, 11800, 9000, 5600], src: 62000, time: now } }, svtav1: { '4k': { fps: 0.9, q: [24, 28, 31, 37], kbps: [12500, 9000, 7100, 4300], src: 62000, time: now } } }, bench: null };
+  byPc.caps['MEDIA-PC'] = { kind: 'caps', pc: 'MEDIA-PC', version: '0.3.9', time: now, compress: true, cpu: 'Intel(R) N100', threads: 4, gpus: ['Intel(R) UHD Graphics'], encoders: ['qsv', 'x265', 'x265slow'], allowCpu: false, levels: lv,
+    calibration: { qsv: { '4k': { fps: 14, q: [19.5, 21.8, 24, 28.5], kbps: [29000, 21000, 15500, 9800], src: 62000, time: now } } }, bench: { state: 'running', percent: 40, what: 'Benchmark 1080 - Intel graphics (Quick Sync, HEVC), setting 22: encoding' } };
   byPc.trash['MEDIA-PC'] = { kind: 'trash', pc: 'MEDIA-PC', time: now, total: 251 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-26', drive: 'E:', date: '2026-09-26', bytes: 251 * GB, files: 5, titles: ['Pirates of the Caribbean: The Curse of the Black Pearl (2003)', 'Pirates of the Caribbean: Dead Man\'s Chest (2006)', 'Pirates of the Caribbean: At World\'s End (2007)', 'Pirates of the Caribbean: On Stranger Tides (2011)', 'Pirates of the Caribbean: Dead Men Tell No Tales (2017)'], more: 0 }] };
   byPc.trash['GAMING-PC'] = { kind: 'trash', pc: 'GAMING-PC', time: now, total: 250 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-12', drive: 'E:', date: '2026-09-12', bytes: 86 * GB, files: 2, titles: ['Harry Potter and the Sorcerer\'s Stone (2001)'], more: 0 }, { path: 'G:\\_TO_DELETE\\2026-09-27', drive: 'G:', date: '2026-09-27', bytes: 164 * GB, files: 2, titles: ['Transformers (2007)', 'Transformers: Age of Extinction (2014)'], more: 0 }] };
 }
 export function demoCommand(obj) {
+  if (obj.cmd === 'benchmark') { const c = byPc.caps[obj.pc]; if (c) byPc.caps[obj.pc] = { ...c, bench: obj.stop ? null : { state: 'waiting' } }; }
   if (obj.cmd === 'pause') { const h = byPc.helper[obj.pc]; if (h) byPc.helper[obj.pc] = { ...h, paused: obj.on, jobs: h.jobs.map((j) => ({ ...j, what: obj.on ? 'paused: paused from the tray or dashboard' : 'Encoding' })) }; }
   if (obj.cmd === 'emptytrash') setTimeout(() => {
     const t = byPc.trash[obj.pc]; const gone = t.batches.filter((b) => obj.batches.includes(b.path));

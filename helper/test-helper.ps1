@@ -359,6 +359,56 @@ $JobsDir = Join-Path $root 'live-jobs'
     $q = (Codec-Args $Encoders.qsv 22 $true $true) -join ' '
     Check 'Quick Sync command: global quality, frames from the CPU as p010' ($q -match 'hevc_qsv' -and $q -match '-global_quality 22' -and $q -match 'p010le')
 
+    # 24. Calibration maths: from measured points to the setting for each quality level
+    $pts = @(@{ q = 16; vmaf = 97; kbps = 30000; fps = 50 }, @{ q = 20; vmaf = 95.5; kbps = 18000; fps = 55 }, @{ q = 24; vmaf = 93; kbps = 10000; fps = 58 }, @{ q = 28; vmaf = 90; kbps = 5000; fps = 60 }, @{ q = 32; vmaf = 86; kbps = 2500; fps = 61 })
+    Check 'calibration: setting between two measured points' ((Interp-Level $pts 95.0) -eq 20.8)
+    Check 'calibration: target above every point uses the best setting' ((Interp-Level $pts 99) -eq 16)
+    Check 'calibration: target below every point uses the smallest file' ((Interp-Level $pts 80) -eq 32)
+    Check 'calibration: size read off at that setting' ([math]::Round((Interp-At $pts 20.8 'kbps')) -eq 16400)
+
+    # 25. Benchmark: which films, saving the results, skipping too-slow encoders, what the dashboard hears
+    $JobsDir = Join-Path $root 'bench-jobs'; New-Item -ItemType Directory -Force $JobsDir | Out-Null
+    . (Join-Path $PSScriptRoot 'bench.ps1')
+    $ConfigPath = Join-Path $root 'bench-config.json'; $Version = 'test'
+    function Pms($m, $path, $p) {
+        if ($path -eq '/library/sections') { return @{ MediaContainer = @{ Directory = @(@{ type = 'movie'; key = '1' }, @{ type = 'show'; key = '2' }) } } }
+        $mk = { param($t, $res, $file, $kbps, $min, $genre = 'Action') @{ title = $t; Genre = @(@{ tag = $genre }); Media = @(@{ videoResolution = $res; bitrate = $kbps; duration = $min * 60000; Part = @(@{ file = $file }) }) } }
+        @{ MediaContainer = @{ Metadata = @(
+            (& $mk 'Net4k' '4k' '\\GAMING-PC\D\Movies\Net.mkv' 80000 130),
+            (& $mk 'Local4k' '4k' '\\TESTPC\PLEX Server\Movies\A.mkv' 50000 120),
+            (& $mk 'Local4kBig' '4k' '\\TESTPC\PLEX Server\Movies\B.mkv' 70000 120),
+            (& $mk 'Cartoon' '4k' '\\TESTPC\PLEX Server\Movies\Toon.mkv' 99000 100 'Animation'),
+            (& $mk 'Short' '4k' '\\TESTPC\PLEX Server\Movies\Short.mkv' 90000 20),
+            (& $mk 'Done' '4k' '\\TESTPC\PLEX Server\Movies\C - Compressed 4K High.mkv' 95000 120),
+            (& $mk 'HD' '1080' '\\TESTPC\PLEX Server\Movies\D.mkv' 30000 100),
+            (& $mk 'SD' 'sd' '\\TESTPC\PLEX Server\Movies\E.mkv' 5000 100)) } }
+    }
+    $bs = @(Find-BenchSources $shares)
+    $b4 = $bs | Where-Object { $_.tier -eq '4k' }; $b1 = $bs | Where-Object { $_.tier -eq '1080' }
+    Check 'benchmark films: local first, then highest bitrate; no animated, short, compressed or unreadable ones' ((@($b4.paths) -join '|') -eq "$root\Movies\B.mkv|$root\Movies\A.mkv" -and @($b1.paths).Count -eq 1 -and $bs.Count -eq 2)
+    $script:Cfg = [pscustomobject]@{ serverUrl = 'x'; compress = [pscustomobject]@{ enabled = $true; encoders = @('amf', 'x265slow'); allowCpu = $true; calibration = $null } }
+    Check 'benchmark: runs by itself when encoders were never measured' (Needs-Calibration)
+    $res = '{"time":"2026-09-28T10:00:00","tiers":{"4k":{"source":"B.mkv","srcKbps":60000,"encoders":{
+        "amf":{"fps":37,"levels":{"extreme":20.4,"high":22.6,"normal":24.5,"saver":27.3},"kbps":{"extreme":27000,"high":19000,"normal":14000,"saver":9000},"vmaf":{"high":95},"points":[{"q":16,"vmaf":98.5}],"skipped":null},
+        "x265slow":{"fps":0.4,"levels":{},"kbps":{},"vmaf":{},"points":[{"q":16,"vmaf":96}],"skipped":"too slow on this PC (0.4 fps)"}}}}}' | ConvertFrom-Json
+    Save-Calibration $res
+    $script:Cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    Check 'benchmark: results saved per encoder and tier' ($script:Cfg.compress.calibration.amf.'4k'.levels.high -eq 22.6 -and $script:Cfg.compress.calibration.amf.'4k'.points[0].q -eq 16)
+    Check 'benchmark: not again once everything is measured' (-not (Needs-Calibration))
+    $c = Choose-Encoder $script:Cfg.compress 'high' '4k' 'hevc'
+    Check 'benchmark: jobs use the measured setting' ($c.encoder -eq 'amf' -and $c.q -eq 22.6 -and $c.calibrated)
+    Check 'benchmark: a processor encoder too slow for 4K here is not used for 4K Extreme' ((Choose-Encoder $script:Cfg.compress 'extreme' '4k' 'hevc').encoder -eq 'amf')
+    Check 'benchmark: ...but still for 1080p' ((Choose-Encoder $script:Cfg.compress 'extreme' '1080' 'hevc').encoder -eq 'x265slow')
+    Check 'benchmark phone summary' ((Bench-Summary $res) -eq '4K: AMD graphics (AMF, HEVC) at 37 fps, High = setting 22.6 (32% of the film)')
+    $caps = Caps-Summary
+    $capsJson = $caps | ConvertTo-Json -Depth 5 -Compress
+    Check 'caps for the dashboard: small, with levels in order' ($caps.kind -eq 'caps' -and (@($caps.calibration.amf.'4k'.q) -join ',') -eq '20.4,22.6,24.5,27.3' -and $caps.calibration.x265slow.'4k'.skip -and $capsJson.Length -lt 3000)
+    Request-Benchmark 'test'
+    Check 'benchmark request holds new compressions' (Bench-Holding)
+    Stop-Benchmark 'test'
+    Check 'benchmark request can be withdrawn' (-not (Bench-Holding))
+    Remove-Item Function:\Pms
+
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
     $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }

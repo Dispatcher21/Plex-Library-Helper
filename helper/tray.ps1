@@ -1,4 +1,4 @@
-<#
+﻿<#
   Plex Library Helper - tray icon (started by library-helper.ps1; one per helper folder)
 
   Shows what the helper is doing in the Windows notification area and gives quick access to it:
@@ -48,6 +48,7 @@ $miStatus = $menu.Items.Add('Starting...'); $miStatus.Enabled = $false
 [void]$menu.Items.Add('-')
 $miDash = $menu.Items.Add('Open dashboard')
 $miPause = $menu.Items.Add('Pause all compressions')
+$miBench = $menu.Items.Add('Run benchmark')
 [void]$menu.Items.Add('-')
 $miCheck = $menu.Items.Add('Status...')
 $miLogs = $menu.Items.Add('Open log folder')
@@ -65,6 +66,20 @@ $miDash.add_Click($openDashboard)
 $miPause.add_Click({
     if (Test-Path -LiteralPath $PauseFile) { Remove-Item -LiteralPath $PauseFile -Force }
     else { New-Item -ItemType Directory -Force (Split-Path $PauseFile) | Out-Null; "Paused from the tray at $(Get-Date -Format o)" | Out-File -LiteralPath $PauseFile -Encoding ascii }
+    Update-Tray
+})
+# Benchmark: ask the helper for one (it starts once nothing else runs), or stop the one running
+$miBench.add_Click({
+    $jobs = Join-Path $Root 'jobs'
+    $running = @(Get-ChildItem -LiteralPath $jobs -Filter 'bench-*.json' -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.status.json' } |
+        Where-Object { $j = try { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } catch { $null }; $j -and -not $j.finished })
+    if ($script:state -and @($script:state.jobs | Where-Object { $_ -and $_.mode -eq 'benchmark' }).Count -and $running.Count) {
+        foreach ($r in $running) { New-Item -ItemType File -Force ([IO.Path]::ChangeExtension($r.FullName, 'cancel')) | Out-Null }
+    } else {
+        New-Item -ItemType Directory -Force $jobs | Out-Null
+        "Asked for from the tray at $(Get-Date -Format o)" | Out-File -LiteralPath (Join-Path $jobs 'BENCHMARK') -Encoding ascii
+        $ni.ShowBalloonTip(5000, 'Plex Library Helper', 'Benchmark asked for: it starts once no compression is running (about 20-60 min; pauses for Plex and games).', 'Info')
+    }
     Update-Tray
 })
 $miCheck.add_Click({ Run-Cmd 'Check status.cmd' })
@@ -106,6 +121,9 @@ function Update-Tray {
     $s = Read-State; $script:state = $s
     $paused = Test-Path -LiteralPath $PauseFile
     $miPause.Text = if ($paused) { 'Resume compressions' } else { 'Pause all compressions' }
+    $benching = $s -and @($s.jobs | Where-Object { $_ -and $_.mode -eq 'benchmark' }).Count
+    $miBench.Visible = [bool]($s -and $s.compress)
+    $miBench.Text = if ($benching) { 'Stop benchmark' } elseif (Test-Path -LiteralPath (Join-Path $Root 'jobs\BENCHMARK')) { 'Benchmark waiting to start' } else { 'Run benchmark (measure encoders)' }
     if (-not (Helper-Alive $s)) {
         $ni.Icon = $Icons.off; $ni.Text = 'Plex Library Helper: not running'; $miStatus.Text = 'Not running'; $miRestart.Text = 'Start helper'
         # Watchdog: the tray only runs while you haven't chosen Quit, so a helper that has been down for
@@ -120,9 +138,9 @@ function Update-Tray {
     foreach ($j in @($s.jobs)) {
         if (-not $j) { continue }
         $left = if ($j.secsLeft) { ', ' + $(if ($j.secsLeft -ge 3600) { '{0}h{1:00}' -f [math]::Floor($j.secsLeft / 3600), [math]::Floor(($j.secsLeft % 3600) / 60) } else { '{0} min' -f [math]::Ceiling($j.secsLeft / 60) }) + ' left' } else { '' }
-        $verb = if ($j.mode -eq 'estimate') { 'Estimating' } else { 'Compressing' }
+        $verb = if ($j.mode -eq 'estimate') { 'Estimating ' } elseif ($j.mode -eq 'benchmark') { '' } else { 'Compressing ' }
         $parts += "$(Short $j.title 14) $($j.percent)%"
-        $lines += "$verb $($j.title): $($j.percent)%$left$(if ($j.what -like 'paused*') { " ($($j.what))" })"
+        $lines += "$verb$($j.title): $($j.percent)%$left$(if ($j.what -like 'paused*') { " ($($j.what))" })"
     }
     if ($s.rip) { $parts += "Rip $([math]::Round([double]$(if ($s.rip.totalPercent) { $s.rip.totalPercent } else { $s.rip.percent })))%"; $lines += "Ripping $($s.rip.folder): $([math]::Round([double]$s.rip.percent))%" }
     $ni.Icon = if ($paused) { $Icons.paused } elseif ($parts.Count) { $Icons.busy } else { $Icons.idle }

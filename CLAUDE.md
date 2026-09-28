@@ -193,6 +193,31 @@ older than 3 min) for 2 min and the tray still running (= you didn't Quit) -> `R
 one copy), which left the helper stopped on 2026-09-27 (exit 0xC000013A).
 Gotcha: a test helper function named `Cmd` hijacked `cmd /c` (names are case-insensitive): don't.
 
+### Any PC, several encoders, benchmark (helper 0.3.9: `helper/encoders.ps1`, `helper/bench.ps1`)
+
+Owner asked to open compression up beyond the AMD gaming PC (NVIDIA, more CPU options, the N100 NAS) and chose:
+AV1 as an option, auto-calibration, routing "always whichever is free". `encoders.ps1`: registry (amf, nvenc, qsv,
+x265, x265slow, av1_amf, av1_nvenc, av1_qsv, svtav1) with sweep ranges and default settings; `Test-Encoders` (0.5 s
+lavfi encode each, in setup); `Choose-Encoder` (graphics first; Extreme -> efficient CPU encoder if `allowCpu`;
+calibrated setting else default; encoders the benchmark marked `skipped` for that tier are left out). Every PC with
+compression on claims any job it can do when free (no central scheduler). Done labels carry `m=<PC>;e=<enc>[;v=av1]`.
+
+Benchmark (`mode: benchmark` in compress.ps1, `Run-Benchmark`): per tier (4K, 1080p) a film from `Find-BenchSources`
+(Plex movies > 1 h, not compressed, local first then highest bitrate; worker takes the first candidate that isn't DV P5
+or short); 3 x 8 s samples for GPU encoders, 3 x 2 s for CPU; 5 settings each; VMAF, kbps, fps (paused time excluded);
+CPU encoders under 0.6 fps are skipped. `Interp-Level` picks the setting for each target (`$QualityTargets`: extreme
+96.5, high 95, normal 93.5, saver 90). `Bench-Poll` (every helper loop): saves `compress.calibration.<enc>.<tier>`,
+phone summary, starts requested runs (`jobs\BENCHMARK`, from tray/setup/dashboard `{"cmd":"benchmark","pc"[,"stop"]}`)
+once no worker runs; auto-runs when encoders are unmeasured and the PC has been idle 10 min (retry after 7 days).
+`Bench-Holding` stops new compress claims while a benchmark waits or runs. Publishes `kind: caps` (cpu, gpus,
+encoders, allowCpu, compact calibration: `q`/`kbps` arrays in level order, fps, skip) on change and hourly; the
+dashboard (`rips.caps()`, `cz.pcGuesses`) shows per-PC encoder/speed in Jobs and per-PC size/time in Compress.
+
+**VMAF pairing bug (fixed 0.3.9):** libvmaf pairs frames by timestamp; the `-c copy` sample and its encode start at
+different timestamps, so it compared neighbouring frames and scored ~10 low (AMF q20: 83.5 instead of 96.8). Both
+inputs now go through `setpts=N`. Estimates from earlier helpers may have under-reported quality.
+First real calibration on this PC (Transformers 1986 4K): AMF q20 = VMAF 96.4 at 52 fps; x265 medium CRF 16 = 96.2.
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg

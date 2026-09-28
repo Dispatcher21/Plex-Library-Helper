@@ -46,7 +46,7 @@ $IdleMinutes = 10
 function Write-Status([hashtable]$s) {
     $s.updated = (Get-Date).ToString('o')
     $tmp = "$($script:StatusFile).tmp"
-    ($s | ConvertTo-Json -Depth 5 -Compress) | Out-File -LiteralPath $tmp -Encoding UTF8
+    ($s | ConvertTo-Json -Depth 9 -Compress) | Out-File -LiteralPath $tmp -Encoding UTF8
     Move-Item -LiteralPath $tmp -Destination $script:StatusFile -Force
 }
 
@@ -365,9 +365,11 @@ function Run-Estimate($job, $src, $preset, [int]$samples = 3) {
         $encSecs += ((Get-Date) - $t).TotalSeconds - $script:LastPausedSecs
         $frames += $n
         $totalBytes += (Get-Item -LiteralPath $out).Length; $totalSec += $cutInfo.Duration
-        # Quality: compare against the same sample put through the same scaling/tone-mapping, so only compression loss counts
+        # Quality: compare against the same sample put through the same scaling/tone-mapping, so only compression loss counts.
+        # setpts=N pairs frames by number: the sample and the encode start at different timestamps, and pairing by
+        # time compared neighbouring frames (scores ~10 too low).
         $ref = @(Video-Filters $preset $src) + 'format=yuv420p10le'
-        $lavfi = "[0:v]format=yuv420p10le[d];[1:v]$($ref -join ',')[r];[d][r]libvmaf=n_threads=8:n_subsample=4"
+        $lavfi = "[0:v]format=yuv420p10le,setpts=N[d];[1:v]$($ref -join ','),setpts=N[r];[d][r]libvmaf=n_threads=8:n_subsample=4"
         $vm = [string](Invoke-Tool $script:Tools.ffmpeg @('-nostdin', '-hide_banner', '-i', (Qt $out), '-i', (Qt $cut), '-lavfi', (Qt $lavfi), '-f', 'null', '-') 'Measuring quality' -Stderr)
         $m = [regex]::Match($vm, 'VMAF score: ([\d.]+)')
         if ($m.Success) { $vmafs += [double]$m.Groups[1].Value }
@@ -574,6 +576,108 @@ function Estimate-Episodes($job, $preset) {
         srcBytes = [long](($items | ForEach-Object { [double]$_.size } | Measure-Object -Sum).Sum) }
 }
 
+# ---------------------------------------------------------------- benchmark (mode 'benchmark')
+# $job.sources: @{ tier = '4k'|'1080'; path } (real films from this library); $job.encoders: ids that work
+# here. For each tier and encoder: encode short samples at each setting in the encoder's sweep, measure
+# quality (VMAF), size and speed, then work out the setting that hits each quality level.
+
+# The setting that just reaches $target quality, between the measured points (lower setting = better).
+function Interp-Level($points, [double]$target) {
+    $p = @($points | Sort-Object { [double]$_.q })
+    if ($p[0].vmaf -lt $target) { return [double]$p[0].q }             # even the best setting falls short: use the best
+    for ($i = 0; $i -lt $p.Count - 1; $i++) {
+        $a = $p[$i]; $b = $p[$i + 1]
+        if ($a.vmaf -ge $target -and $b.vmaf -lt $target) { return [math]::Round($a.q + ($b.q - $a.q) * ($a.vmaf - $target) / [math]::Max(0.01, $a.vmaf - $b.vmaf), 1) }
+    }
+    [double]$p[-1].q                                                   # every setting beats it: the smallest file
+}
+# A measured value (kbps, vmaf, fps) at setting $q, read off between the points
+function Interp-At($points, [double]$q, [string]$field) {
+    $p = @($points | Sort-Object { [double]$_.q })
+    if ($q -le $p[0].q) { return [double]$p[0].$field }
+    for ($i = 0; $i -lt $p.Count - 1; $i++) {
+        $a = $p[$i]; $b = $p[$i + 1]
+        if ($q -le $b.q) { return [double]$a.$field + ($b.$field - $a.$field) * ($q - $a.q) / [math]::Max(0.01, $b.q - $a.q) }
+    }
+    [double]$p[-1].$field
+}
+
+function Run-Benchmark($job) {
+    $sources = @($job.sources); $encs = @($job.encoders | Where-Object { $Encoders[$_] })
+    $steps = 0; foreach ($s in $sources) { foreach ($id in $encs) { $steps += $Encoders[$id].Sweep.Count } }
+    $done = 0; $result = [ordered]@{ tiers = [ordered]@{}; time = (Get-Date).ToString('o') }
+    foreach ($s in $sources) {
+        $height = if ($s.tier -eq '4k') { 2160 } else { 1080 }
+        # the helper sends a few candidate films per tier: use the first one that suits
+        $src = $null; $why = @()
+        foreach ($path in @(@($s.paths) + @($s.path) | Where-Object { $_ })) {
+            try {
+                $info = Get-SourceInfo $path
+                if ($info.DvProfile -eq 5) { $why += "$(Split-Path $path -Leaf): Dolby Vision profile 5"; continue }
+                if ($info.Height -lt $height * 0.8 -and $info.Width -lt ($height * 16 / 9) * 0.8) { $why += "$(Split-Path $path -Leaf): only $($info.Width)x$($info.Height)"; continue }
+                if ($info.Duration -lt 600) { $why += "$(Split-Path $path -Leaf): too short"; continue }
+                $src = $info; $s | Add-Member -NotePropertyName path -NotePropertyValue $path -Force; break
+            } catch { $why += "$(Split-Path $path -Leaf): $($_.Exception.Message)" }
+        }
+        if (-not $src) { Wlog "No usable $($s.tier) film for the benchmark: $($why -join '; ')"; $done += @($encs | ForEach-Object { $Encoders[$_].Sweep.Count } | Measure-Object -Sum).Sum; continue }
+        Wlog "Benchmark $($s.tier): $($s.path)"
+        # samples: 3 x 8 s for graphics encoders, 3 x 2 s for processor encoders (much slower), at 25/50/75%
+        $cuts = @{}
+        foreach ($len in 8, 2) {
+            $cuts[$len] = @(for ($k = 0; $k -lt 3; $k++) {
+                $cut = Join-Path $script:Work "b-$($s.tier)-$len-$k.mkv"
+                Invoke-Tool $script:Tools.ffmpeg @('-nostdin', '-v', 'error', '-y', '-ss', ('{0:0.###}' -f ($src.Duration * (0.25 + 0.25 * $k))), '-t', $len, '-i', (Qt $s.path), '-map', '0:v:0', '-c', 'copy', (Qt $cut)) 'Cutting a sample' | Out-Null
+                @{ path = $cut; info = (Get-SourceInfo $cut) }
+            })
+        }
+        $tierRes = [ordered]@{ source = (Split-Path $s.path -Leaf); srcKbps = [long](($src.Size - $src.AudioBytes) * 8 / [math]::Max(1.0, $src.Duration) / 1000); encoders = [ordered]@{} }
+        foreach ($id in $encs) {
+            $e = $Encoders[$id]; $cpu = $e.Kind -eq 'cpu'
+            $samples = $cuts[$(if ($cpu) { 2 } else { 8 })]
+            $points = @(); $skip = $null
+            foreach ($q in $e.Sweep) {
+                $done++
+                $script:PhasePrefix = "Benchmark $($s.tier.ToUpper()) - $($e.Label), setting $($q): "
+                $script:MapPct = [scriptblock]::Create("param(`$p) ($done - 1 + `$p / 100) / $steps * 100")
+                $preset = @{ Label = 'benchmark'; Height = $height; Encoder = $id; Q = $q; KeepsDV = $false }
+                $bytes = 0L; $secs = 0.0; $frames = 0L; $encSecs = 0.0; $vm = @()
+                foreach ($smp in $samples) {
+                    $out = Join-Path $script:Work "o-$id.mkv"; $prog = Join-Path $script:Work "o-$id.progress"
+                    $t0 = Get-Date
+                    $n = Run-Encode (Encode-Args $preset $src $smp.path $out $prog) $prog $smp.info.Duration $job.rules {
+                        param($f, $fps, $why) Write-Status @{ state = 'run'; phase = "$($script:PhasePrefix)encoding"; percent = [int](& $script:MapPct ($f * 100)); paused = $why }
+                    } $smp.info.Frames
+                    $encSecs += ((Get-Date) - $t0).TotalSeconds - $script:LastPausedSecs; $frames += $n
+                    $bytes += (Get-Item -LiteralPath $out).Length; $secs += $smp.info.Duration
+                    # quality: against the same sample put through the same scaling/tone-mapping
+                    $ref = @(Video-Filters $preset $src) + 'format=yuv420p10le'
+                    $sub = if ($height -ge 2160) { 8 } else { 4 }
+                    $lavfi = "[0:v]format=yuv420p10le,setpts=N[d];[1:v]$($ref -join ','),setpts=N[r];[d][r]libvmaf=n_threads=$([Environment]::ProcessorCount):n_subsample=$sub"
+                    $txt = [string](Invoke-Tool $script:Tools.ffmpeg @('-nostdin', '-hide_banner', '-i', (Qt $out), '-i', (Qt $smp.path), '-lavfi', (Qt $lavfi), '-f', 'null', '-') 'Measuring quality' -Stderr)
+                    $m = [regex]::Match($txt, 'VMAF score: ([\d.]+)'); if ($m.Success) { $vm += [double]$m.Groups[1].Value }
+                }
+                $fps = $frames / [math]::Max(0.1, $encSecs)
+                $points += [ordered]@{ q = $q; vmaf = $(if ($vm.Count) { [math]::Round(($vm | Measure-Object -Average).Average, 2) } else { 0 }); kbps = [long]($bytes * 8 / [math]::Max(0.1, $secs) / 1000); fps = [math]::Round($fps, 2) }
+                Wlog ("{0} {1} q={2}: VMAF {3}, {4} kbps, {5} fps" -f $s.tier, $id, $q, $points[-1].vmaf, $points[-1].kbps, $points[-1].fps)
+                # a processor encoder this slow here isn't worth calibrating further (hours per sample set)
+                if ($cpu -and $fps -lt 0.6) { $skip = "too slow on this PC ($([math]::Round($fps, 2)) fps)"; $done += $e.Sweep.Count - $points.Count; break }
+            }
+            $levels = [ordered]@{}; $kbps = [ordered]@{}; $vmaf = [ordered]@{}
+            if (-not $skip -and $points.Count -ge 2) {
+                foreach ($lv in $QualityTargets.Keys) {
+                    $q = Interp-Level $points $QualityTargets[$lv]
+                    $levels[$lv] = $q; $kbps[$lv] = [long](Interp-At $points $q 'kbps'); $vmaf[$lv] = [math]::Round((Interp-At $points $q 'vmaf'), 1)
+                }
+            }
+            $tierRes.encoders[$id] = [ordered]@{ fps = [math]::Round((@($points | ForEach-Object { $_.fps }) | Measure-Object -Average).Average, 2); levels = $levels; kbps = $kbps; vmaf = $vmaf; points = $points; skipped = $skip }
+            foreach ($f in Get-ChildItem -LiteralPath $script:Work -Filter "o-$id.*") { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+        }
+        $result.tiers[$s.tier] = $tierRes
+    }
+    if (-not $result.tiers.Count) { throw 'None of the films picked for the benchmark could be used.' }
+    $result
+}
+
 # ---------------------------------------------------------------- main
 
 if (-not $JobFile) { return }   # dot-sourced by tests
@@ -600,6 +704,12 @@ $script:Child = $null
 Write-Status @{ state = 'run'; phase = 'Starting'; percent = 0; pid = $PID }
 Wlog "Worker ${PID}: $($job.mode) '$($job.title)' preset $($job.preset) audio $($job.audio) from $($job.source)"
 try {
+    if ($job.mode -eq 'benchmark') {
+        $result = Run-Benchmark $job
+        Write-Status @{ state = 'done'; percent = 100; result = $result }
+        Wlog 'Benchmark done.'
+        return
+    }
     $preset = $Presets[$job.preset]
     if (-not $preset) { throw "Unknown preset '$($job.preset)'." }
     $preset = $preset.Clone()

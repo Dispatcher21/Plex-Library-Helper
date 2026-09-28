@@ -1,4 +1,4 @@
-<#
+﻿<#
   Plex Library Helper (Windows PowerShell 5.1+)
 
   The small background program that moves files for the Plex Library Dashboard. The dashboard
@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.8'
+$Version = '0.3.9'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -454,7 +454,7 @@ function Process-Jobs {
 function Save-Config {
     $out = [ordered]@{}
     foreach ($p in $script:Cfg.PSObject.Properties) { if ($p.Name -ne 'Token') { $out[$p.Name] = $p.Value } }
-    $out | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $ConfigPath -Encoding UTF8
+    $out | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ConfigPath -Encoding UTF8
 }
 
 function Compress-On { [bool]($script:Cfg.compress -and $script:Cfg.compress.enabled) }
@@ -713,6 +713,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
         if (Test-Path -LiteralPath $jobFile) { return }                 # already claimed; label update pending
         if (@(Running-Workers $mode).Count) { return }                 # one compress and one estimate at a time
         if (Is-Paused) { return }                                      # paused from the tray or dashboard: wait
+        if (Bench-Holding) { return }                                  # a benchmark is waiting or running: it runs alone
         # Can this PC do it (right encoder, processor jobs allowed)? If not, another PC will
         $choice = Job-Encoder $j.Info
         if (-not $choice) { return }
@@ -764,12 +765,12 @@ function Process-CompressJob($w, [hashtable]$shares) {
     if ($st -and $st.state -eq 'done') {
         $r = $st.result
         if ($mode -eq 'estimate') {
-            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes; c = $r.episodes; w = $jf.scope; m = $env:COMPUTERNAME; e = $jf.encoder }
+            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes; c = $r.episodes; w = $jf.scope; m = $env:COMPUTERNAME; e = $jf.encoder; v = $(if ($jf.codec -eq 'av1') { 'av1' }) }
         } elseif ($jf.items) {
             # c = episodes in the job, n = compressed, f = failed, w = season/show, x = first problem (last: may be cut)
-            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; c = $r.episodes; n = $r.done; f = $r.failed; w = $jf.scope; x = ([string]$r.problem -replace '[;=+]', ' ') }
+            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; c = $r.episodes; n = $r.done; f = $r.failed; w = $jf.scope; x = ([string]$r.problem -replace '[;=+]', ' '); m = $env:COMPUTERNAME; e = $jf.encoder; v = $(if ($jf.codec -eq 'av1') { 'av1' }) }
         } else {
-            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }); m = $env:COMPUTERNAME; e = $jf.encoder }
+            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }); m = $env:COMPUTERNAME; e = $jf.encoder; v = $(if ($jf.codec -eq 'av1') { 'av1' }) }
         }
         Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'done' $info)
         if ($mode -eq 'compress' -and $jf.items) {
@@ -896,6 +897,10 @@ function Setup-Compression {
     try {
         Enable-Compress
         Say "Compression is on. Work folder: $($script:Cfg.compress.workDir)" Green
+        Say 'The helper measures each encoder on a couple of your own films (quality, size and speed), so it knows'
+        Say 'which setting gives each quality level on this PC and the dashboard can show estimates. It does this by'
+        Say 'itself the first time the PC is idle; it takes about 20-60 minutes and pauses for Plex streams and games.'
+        if (Ask 'Run the benchmark as soon as the helper is free instead?' $false) { Request-Benchmark 'setup' }
     } catch {
         Say "Compression is not on yet: $($_.Exception.Message)" Yellow
         Say 'Fix that, then run setup again (you will not need to sign in again).' Yellow
@@ -1198,6 +1203,7 @@ function Setup-Rips {
 . (Join-Path $Root 'encoders.ps1')
 . (Join-Path $Root 'rips.ps1')
 . (Join-Path $Root 'live.ps1')
+. (Join-Path $Root 'bench.ps1')
 
 if ($Setup) { Setup-Wizard; exit 0 }
 if ($EmptyTrash) { Empty-Trash; exit 0 }   # works without Plex settings
@@ -1233,6 +1239,7 @@ do {
     try { Process-Jobs } catch { Log "Polling failed: $($_.Exception.Message)" 'ERROR' }
     try { Rip-Poll } catch { Log "Rip watcher: $($_.Exception.Message)" 'WARN' }
     try { Live-Poll } catch { Log "Live status: $($_.Exception.Message)" 'WARN' }
+    try { Bench-Poll } catch { Log "Benchmark: $($_.Exception.Message)" 'WARN' }
     if ($Once) { break }
     Start-Sleep -Seconds ([int]$Cfg.pollSeconds)
 } while ($true)

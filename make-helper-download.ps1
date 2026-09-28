@@ -1,4 +1,4 @@
-# Builds download/Plex-Library-Helper-<version>.zip, the one download every PC uses, and download/latest.json
+﻿# Builds download/Plex-Library-Helper-<version>.zip, the one download every PC uses, and download/latest.json
 # (which file is current; the dashboard reads it for its download link). Older zips are removed.
 # Run after changing anything in helper\, and commit the download folder with the change.
 #   powershell -ExecutionPolicy Bypass -File make-helper-download.ps1
@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $src = Join-Path $repo 'helper'
 $files = 'Set up Plex Library Helper.cmd', 'Check status.cmd', 'Empty _TO_DELETE.cmd', 'Stop and remove.cmd', 'README.md',
-    'library-helper.ps1', 'compress.ps1', 'rips.ps1', 'live.ps1', 'tray.ps1', 'install-helper.ps1', 'uninstall-helper.ps1'
+    'library-helper.ps1', 'compress.ps1', 'encoders.ps1', 'bench.ps1', 'rips.ps1', 'live.ps1', 'tray.ps1', 'install-helper.ps1', 'uninstall-helper.ps1'
 
 $stage = Join-Path $env:TEMP ("pld-zip-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $dir = Join-Path $stage 'Plex Library Helper'

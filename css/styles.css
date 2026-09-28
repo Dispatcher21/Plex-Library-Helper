@@ -193,6 +193,10 @@ h3.ch { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color
 /* Helpers and _TO_DELETE in Jobs */
 .liverow { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .liverow .fine { display: block; }
+.liverow.capsrow { padding-top: 0; margin-top: -4px; }
+.whichpc { margin-top: 10px; padding: 6px 12px; border-radius: 8px; background: var(--hdr-bg); }
+.whichpc .liverow { border-bottom: 0; padding: 4px 0; }
+.whichpc .liverow .fine { display: inline; }
 button.stat { text-align: left; cursor: pointer; font: inherit; color: inherit; }
 button.stat:hover { border-color: var(--line-strong); }
 .tbatch { display: flex; gap: 8px; align-items: flex-start; }
