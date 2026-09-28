@@ -215,7 +215,8 @@ namespace PlexLibraryHelper
                 _bar.Foreground = paused ? Ui.Br("Fg3") : j.Mode == "benchmark" ? Ui.Br("Accent") : Ui.Br("Teal");
                 _phase.Text = paused ? "Paused: " + j.Paused : j.Phase;
                 _phase.Foreground = paused ? Ui.Br("Warn") : Ui.Br("Fg3");
-                _left.Text = j.SecsLeft.HasValue && !paused ? "about " + Live.Duration(j.SecsLeft.Value) + " left" : "";
+                _left.Text = j.SecsLeft.HasValue && !paused ? "about " + Live.Duration(j.SecsLeft.Value) + " left"
+                    : (j.Phase ?? "").StartsWith("Finishing up") ? "the last steps can take 20-40 minutes" : "";
                 if (_mode != j.Mode)
                 {
                     _mode = j.Mode;

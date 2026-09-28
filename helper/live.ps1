@@ -23,15 +23,24 @@ $StateFile = Join-Path $Root 'state.json'
 $script:LiveStarted = Get-Date
 $script:CmdSince = $null
 $script:LastHelperMsg = @{ sig = ''; at = [datetime]::MinValue }
-$script:LastTrashMsg = @{ sig = ''; at = [datetime]::MinValue }
+$script:LastTrashMsg = @{ sig = ''; at = [datetime]::MinValue; checked = $null }
 
 function Channel-On { [bool]($script:Cfg.notify -and $script:Cfg.notify.topic) }
 
+# ntfy.sh allows each internet connection about 250 messages a day (both PCs at home share it), so status goes
+# out only when it changes, with slow heartbeats (see Live-Poll, Rip-Poll, Bench-Poll, Torrent-Publish). If
+# ntfy says "too many" anyway, status stays quiet for 30 minutes so phone notifications get what's left.
+$script:NtfyQuietUntil = [datetime]::MinValue
 function Publish-Live($obj) {
+    if ((Get-Date) -lt $script:NtfyQuietUntil) { throw 'ntfy asked for fewer messages: status updates wait a while' }
     $n = $script:Cfg.notify
     $body = [ordered]@{ topic = "$($n.topic)-status"; message = ($obj | ConvertTo-Json -Compress -Depth 5); title = [string]$obj.kind; priority = 1 }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Compress))
-    Invoke-RestMethod -Method Post -Uri $n.server.TrimEnd('/') -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15 | Out-Null
+    try { Invoke-RestMethod -Method Post -Uri $n.server.TrimEnd('/') -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 15 | Out-Null }
+    catch {
+        if ($_.Exception.Message -match '429') { $script:NtfyQuietUntil = (Get-Date).AddMinutes(30); Log 'ntfy: daily message limit reached, status updates paused for 30 minutes (phone notifications still try)' 'WARN' }
+        throw
+    }
 }
 
 # ---------------------------------------------------------------- pause
@@ -148,16 +157,19 @@ function Live-Poll {
     if (-not (Channel-On)) { return }
     try { Read-Commands } catch { }
     $h = Helper-Summary
-    $sig = "$($h.paused)|" + (($h.jobs | ForEach-Object { "$($_.title)/$([int]($_.percent / 5))/$($_.what)" }) -join ',')
-    if ($sig -ne $script:LastHelperMsg.sig -or ((Get-Date) - $script:LastHelperMsg.at).TotalMinutes -ge 5) {
+    # job progress reaches the dashboard through Plex, so this goes out when something starts, finishes or
+    # pauses, plus an hourly "still here" (the dashboard calls a PC silent after 70 minutes)
+    $sig = "$($h.paused)|" + (($h.jobs | ForEach-Object { "$($_.title)/$($_.mode)/$([bool]($_.what -like 'paused*'))" }) -join ',')
+    if ($sig -ne $script:LastHelperMsg.sig -or ((Get-Date) - $script:LastHelperMsg.at).TotalMinutes -ge 60) {
         try { Publish-Live $h; $script:LastHelperMsg = @{ sig = $sig; at = Get-Date } } catch { }
     }
-    if (((Get-Date) - $script:LastTrashMsg.at).TotalMinutes -ge 5 -or -not $script:LastTrashMsg.sig) {
+    if (-not $script:LastTrashMsg.checked -or ((Get-Date) - $script:LastTrashMsg.checked).TotalMinutes -ge 5) {
+        $script:LastTrashMsg.checked = Get-Date
         $t = Trash-Summary
         $tsig = ($t.batches | ForEach-Object { "$($_.path)=$($_.bytes)" }) -join ','
-        if ($tsig -ne $script:LastTrashMsg.sig -or ((Get-Date) - $script:LastTrashMsg.at).TotalMinutes -ge 15) {
-            try { Publish-Live $t; $script:LastTrashMsg = @{ sig = $tsig; at = Get-Date } } catch { }
-        } else { $script:LastTrashMsg.at = Get-Date }
+        if ($tsig -ne $script:LastTrashMsg.sig -or ((Get-Date) - $script:LastTrashMsg.at).TotalHours -ge 6) {
+            try { Publish-Live $t; $script:LastTrashMsg.sig = $tsig; $script:LastTrashMsg.at = Get-Date } catch { }
+        }
     }
 }
 

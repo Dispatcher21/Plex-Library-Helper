@@ -12,6 +12,8 @@
   - Silent while qBittorrent isn't running.
 
   Config: torrent = { enabled, port, rules = { plex, plexall, game, idle, night }, notify }
+  The dashboard hears about changes at once and progress every 20 minutes (ntfy.sh message limit); the app
+  reads qBittorrent itself every 2 seconds.
   Pause all (dashboard / tray / app): the file jobs\TORRENTS-HOLD = slow down now, whatever the rules say.
 #>
 
@@ -125,9 +127,12 @@ function Torrent-Poll {
 function Torrent-Publish($s) {
     $script:TorrentState = $s
     if (-not (Channel-On)) { return }
-    $sig = "$($s.running)|$($s.slowed)|$($s.problem)|$($s.held)|" + (@($s.torrents) | ForEach-Object { "$($_.hash)/$([int]($_.progress / 5))/$($_.state)" }) -join ','
+    # at once when something starts, finishes, stalls or gets slowed down; progress every 20 minutes while
+    # downloading; otherwise hourly (ntfy.sh's daily message limit, see Publish-Live)
+    $sig = "$($s.running)|$($s.slowed)|$($s.problem)|$($s.held)|" + (@($s.torrents) | ForEach-Object { "$($_.hash)/$($_.state)" }) -join ','
     $busy = [int]$s.downloading -gt 0
-    if ($sig -ne $script:Tor.lastSig -or ($busy -and ((Get-Date) - $script:Tor.lastAt).TotalSeconds -ge 60) -or ((Get-Date) - $script:Tor.lastAt).TotalMinutes -ge 15) {
+    $age = ((Get-Date) - $script:Tor.lastAt).TotalMinutes
+    if ($sig -ne $script:Tor.lastSig -or ($busy -and $age -ge 20) -or $age -ge 60) {
         try { Publish-Live $s; $script:Tor.lastSig = $sig; $script:Tor.lastAt = Get-Date } catch { }
     }
 }

@@ -1,4 +1,4 @@
-<#
+﻿<#
   Plex Library Helper - MakeMKV rip watcher (loaded by library-helper.ps1)
 
   Watches rips you start in MakeMKV as usual and reports them to the dashboard. Nothing here starts,
@@ -255,6 +255,7 @@ function Rip-QueueCompressions {
 }
 
 # Called every poll by the helper
+$script:RipPub = @{ sig = ''; at = [datetime]::MinValue; warned = $false }
 function Rip-Poll {
     if (-not (Rip-On)) { return }
     Rip-QueueCompressions
@@ -273,7 +274,11 @@ function Rip-Poll {
     if ($s.library -eq 'show') { $s.autoCompress = $false; $script:Rip.autoCompress = $false }
     if ($null -eq $s.autoCompress) { $s.autoCompress = [bool]$script:Cfg.rip.autoCompress }
     $script:RipLastStatus = $s
-    try { Publish-Live $s } catch { Log "Couldn't publish rip progress: $($_.Exception.Message)" 'WARN' }
+    # the dashboard's card: at once when a rip starts, moves to the next file or finishes; otherwise every 3 min
+    $sig = "$($s.id)|$($s.state)|$($s.file)|$(@($s.done).Count)|$($s.autoCompress)"
+    if ($sig -ne $script:RipPub.sig -or ((Get-Date) - $script:RipPub.at).TotalMinutes -ge 3) {
+        try { Publish-Live $s; $script:RipPub = @{ sig = $sig; at = Get-Date; warned = $false } } catch { if (-not $script:RipPub.warned) { Log "Couldn't publish rip progress: $($_.Exception.Message)" 'WARN'; $script:RipPub.warned = $true } }
+    }
     if ($s.state -eq 'done') {
         $files = @($script:Rip.done)
         $script:RipLastId = $s.id; $script:RipLastFiles = $files

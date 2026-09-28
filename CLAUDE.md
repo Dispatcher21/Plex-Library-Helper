@@ -264,6 +264,19 @@ Port/LocalHostAuth=false; only while qBittorrent is closed; backup `.before-plex
 - Tests: `helper/tests/test-torrent.ps1` (19, against `fake_qbt.py`, never the real qBittorrent). test-helper.ps1
   now checks the exe/download carry every engine file (pause.ps1/torrent.ps1 were missed once).
 
+### ntfy message budget (0.4.3)
+
+**ntfy.sh allows ~250 messages a day per internet connection** (both PCs share the home IP). From 12:45 on
+2026-09-28 every publish got 429: the 5-min heartbeat alone was 288/day, rip progress went out every poll, trash
+every 15 min. Now: helper status only on job start/finish/pause + hourly (job % comes from Plex labels; the
+dashboard's helper line takes % from the label); rips at once on start/next file/done, else every 3 min; trash
+and caps on change + every 6 h; torrents on state changes, progress every 20 min while downloading, else hourly.
+After a 429, `Publish-Live` stays quiet for 30 min (`$script:NtfyQuietUntil`) so phone notifications get the
+rest. Dashboard reads `since=12h` (ntfy.sh keeps 12 h), PCs count as silent after 70 min, rip card "No update"
+after 8 min, qBittorrent card hidden after 70 min. Busy day estimate: ~150-190 for both PCs.
+The steps after an encode are named "Finishing up: ..." (with a log line each; they take 20-40 min on 4K films:
+audio, mkvmerge, verify, copy); the app and dashboard add "the last steps can take 20-40 min".
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg

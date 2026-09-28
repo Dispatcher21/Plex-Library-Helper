@@ -366,6 +366,7 @@ function Run-Compress($job, $src, $preset, $target = $null) {
             $left = [long]$left
         }
         Write-Status @{ state = 'run'; phase = "$($script:PhasePrefix)$phase"; percent = [int][math]::Min(99.0, (& $script:MapPct $pct)); secsLeft = $left; paused = $why; dest = $dest }
+        if ($phase -like 'Finishing up*' -and $phase -ne $script:LastStep) { $script:LastStep = $phase; Wlog $phase }   # how long each last step takes
     }
 
     $rpu = Join-Path $script:Work 'rpu.bin'
@@ -387,13 +388,13 @@ function Run-Compress($job, $src, $preset, $target = $null) {
 
     $videoFinal = $videoOut
     if ($useRpu) {
-        & $report 'Adding Dolby Vision' 91 0 ''
+        & $report 'Finishing up: adding Dolby Vision back' 91 0 ''
         $videoFinal = Join-Path $script:Work 'video-dv.hevc'
         Invoke-Tool $script:Tools.dovi @('inject-rpu', '-i', (Qt $videoOut), '--rpu-in', (Qt $rpu), '-o', (Qt $videoFinal)) 'Adding Dolby Vision' | Out-Null
         Remove-Item -LiteralPath $videoOut
     }
 
-    & $report 'Preparing audio' 93 0 ''
+    & $report 'Finishing up: preparing the audio' 93 0 ''
     $audio = Audio-Plan $src $job.audio
     $extraAudio = $null
     if ($null -ne $audio.Transcode) {
@@ -402,7 +403,7 @@ function Run-Compress($job, $src, $preset, $target = $null) {
         Invoke-Tool $script:Tools.ffmpeg @('-nostdin', '-v', 'error', '-y', '-i', (Qt $src.Path), '-map', '0:a:0', '-c:a', 'eac3', '-b:a', "$($SmallAudioKbps)k", '-ac', $ch, (Qt $extraAudio)) 'Converting audio' | Out-Null
     }
 
-    & $report 'Putting it together' 95 0 ''
+    & $report 'Finishing up: putting the file together' 95 0 ''
     $muxed = Join-Path $script:Work 'final.mkv'
     $m = @('-q', '-o', (Qt $muxed), '--title', (Qt $title))
     $m += '--language', "0:$($src.Language)"
@@ -415,10 +416,10 @@ function Run-Compress($job, $src, $preset, $target = $null) {
     $mo = Invoke-Tool $script:Tools.mkvmerge $m 'Putting the file together'
     $audioCount = $audio.Copy.Count + $(if ($extraAudio) { 1 } else { 0 })
 
-    & $report 'Checking the result' 97 0 ''
+    & $report 'Finishing up: checking the new file' 97 0 ''
     $out = Verify-Output $muxed $src $preset $frames $audioCount $expectDv
 
-    & $report 'Copying into the library' 98 0 ''
+    & $report 'Finishing up: copying it next to the original' 98 0 ''
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     $partial = "$dest.partial"
     Copy-Item -LiteralPath $muxed -Destination $partial -Force

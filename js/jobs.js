@@ -146,7 +146,7 @@ export class DemoJobs {
     } else {
       const total = Math.round(guess.secs || 5400);
       const ep = (n) => (v.show ? `Episode ${n} of ${v.episodes} (S01E0${n}): ` : '');
-      const steps = [[3, `${ep(1)}Reading Dolby Vision`], [20, `${ep(1)}Encoding`], [37, 'paused: Plex is transcoding a stream'], [55, `${ep(2)}Encoding`], [80, `${ep(3)}Encoding`], [97, `${ep(3)}Checking the result`]];
+      const steps = [[3, `${ep(1)}Reading Dolby Vision`], [20, `${ep(1)}Encoding`], [37, 'paused: Plex is transcoding a stream'], [55, `${ep(2)}Encoding`], [80, `${ep(3)}Encoding`], [97, `${ep(3)}Finishing up: checking the new file`]];
       steps.forEach(([p, what], i) => setTimeout(() => j.state === 'run' || j.state === 'queued' ? this.set(j, 'run', `${p};${Math.round(total * (1 - p / 100))};${what};${o.p};${o.s || ''}`) : null, 2000 + i * 2500));
       setTimeout(() => j.state === 'run' && this.set(j, 'done', v.show ? `b=${Math.round(guess.bytes)};c=${v.episodes};f=0;n=${v.episodes};p=${o.p};s=${v.size};w=${o.s}` : `b=${Math.round(guess.bytes)};dv=${o.p?.startsWith('4k') ? 1 : 0};p=${o.p};s=${v.size}`), 2000 + steps.length * 2500);
     }

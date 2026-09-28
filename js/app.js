@@ -572,8 +572,15 @@ function liveChanged() {
 }
 
 function helperLine(h) {
-  const stale = Date.now() - new Date(h.time).getTime() > 12 * 60000;   // helpers report at least every 5 min
-  const jobs = (h.jobs || []).map((j) => `${j.mode === 'estimate' ? 'estimating' : j.mode === 'benchmark' ? 'benchmark' : 'compressing'} ${j.mode === 'benchmark' ? '' : `${esc(j.title)} `}${j.percent}%${j.secsLeft ? ` (about ${cz.fmtDuration(j.secsLeft)} left)` : ''}${/^paused/.test(j.what || '') ? ` · ${esc(j.what)}` : ''}`);
+  // helpers report changes at once and otherwise hourly (ntfy.sh's daily message limit), so silent = over 70 min
+  const stale = Date.now() - new Date(h.time).getTime() > 70 * 60000;
+  // progress comes from the job's label in Plex (fresher than the helper's last message)
+  const live = (j) => { const p = state.jobs.find((x) => x.state === 'run' && x.title === j.title); return p ? cz.parseRun(p.info) : null; };
+  const jobs = (h.jobs || []).map((j) => {
+    const p = j.mode === 'benchmark' ? null : live(j);
+    const pct = p ? p.percent : j.percent; const left = p ? p.secsLeft : j.secsLeft;
+    return `${j.mode === 'estimate' ? 'estimating' : j.mode === 'benchmark' ? 'benchmark' : 'compressing'} ${j.mode === 'benchmark' ? '' : `${esc(j.title)} `}${Math.round(pct)}%${left ? ` (about ${cz.fmtDuration(left)} left)` : ''}${/^paused/.test(j.what || '') ? ` · ${esc(j.what)}` : ''}`;
+  });
   const doing = stale ? `not heard from since ${timeAgo(new Date(h.time).getTime())}` : jobs.length ? jobs.join(', ') : h.paused ? 'compressions paused' : 'idle';
   const btn = h.compress && !stale ? `<button class="btn small ${h.paused ? 'primary' : ''}" data-hpause="${esc(h.pc)}" data-on="${h.paused ? 0 : 1}">${h.paused ? 'Resume compressions' : 'Pause all compressions'}</button>` : '';
   return `<div class="liverow"><span><b>${esc(h.pc)}</b> <span class="fine">helper ${esc(h.version || '?')}</span> · ${doing}</span>${btn}</div>${stale ? '' : capsLine(rips.caps(h.pc))}`;
@@ -703,7 +710,7 @@ function jobDescription(j) {
     let info = '';
     if (j.state === 'run') {
       const r = cz.parseRun(j.info);
-      info = `${Math.round(r.percent)}%${r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : ''} · ${r.paused ? `paused: ${r.paused}` : r.what}`;
+      info = `${Math.round(r.percent)}%${r.secsLeft ? ` · about ${cz.fmtDuration(r.secsLeft)} left` : ''} · ${r.paused ? `paused: ${r.paused}` : r.what}${/^Finishing up/.test(r.what) && !r.secsLeft ? ' (the last steps can take 20–40 min)' : ''}`;
     } else if (j.state === 'done' && j.action === 'ce') info = cz.estimateText(j.info, v) + ranOn(cz.decodeInfo(j.info));
     else if (j.state === 'done') {
       const o = cz.decodeInfo(j.info);

@@ -37,7 +37,7 @@ export function helpers() { return Object.values(byPc.helper).sort((a, b) => a.p
 export function trashes() { return Object.values(byPc.trash).filter((t) => t.batches?.length).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function result(req) { return results[req] || null; }
 // qBittorrent on each PC (kind 'torrents'): newest report per PC, only recent ones
-export function torrents() { return Object.values(byPc.torrents).filter((t) => Date.now() - new Date(t.time).getTime() < 20 * 60000).sort((a, b) => a.pc.localeCompare(b.pc)); }
+export function torrents() { return Object.values(byPc.torrents).filter((t) => Date.now() - new Date(t.time).getTime() < 70 * 60000).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function caps(pc) { return pc ? byPc.caps[pc] || null : Object.values(byPc.caps).filter((c) => c.compress).sort((a, b) => a.pc.localeCompare(b.pc)); }
 
 function take(msg) {
@@ -88,13 +88,13 @@ export function demoCommand(obj) {
   onChange(latest);
 }
 
-// Last status from the past two hours, then live updates
+// Last status from the past 12 hours (what ntfy.sh keeps; helpers send changes, not a stream), then live updates
 export async function start(changed) {
   onChange = changed || onChange;
   stop();
   const c = channel(); if (!c) return;
   try {
-    const r = await fetch(`${c.server}/${c.topic}-status/json?poll=1&since=2h`);
+    const r = await fetch(`${c.server}/${c.topic}-status/json?poll=1&since=12h`);
     if (r.ok) for (const line of (await r.text()).split('\n')) { if (line.trim()) take(JSON.parse(line)); }
   } catch { /* offline: the live stream below retries */ }
   try {
@@ -116,7 +116,8 @@ export function phase(s, now = Date.now()) {
   if (!s) return null;
   const age = (now - new Date(s.time).getTime()) / 1000;
   if (s.state === 'done') return age < 3600 ? 'done' : null;
-  if (s.state === 'ripping') return age < 180 ? 'ripping' : age < 6 * 3600 ? 'stale' : null;
+  // the helper sends rip progress every 3 minutes (and at once on changes)
+  if (s.state === 'ripping') return age < 480 ? 'ripping' : age < 6 * 3600 ? 'stale' : null;
   return null;
 }
 

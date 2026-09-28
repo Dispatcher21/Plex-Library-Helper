@@ -213,11 +213,11 @@ function Bench-Poll {
             }
         }
     }
-    # tell the dashboard what this PC can do: on start, on change, and hourly
+    # tell the dashboard what this PC can do: on start, on change, and every 6 hours
     if (Channel-On) {
         $caps = Caps-Summary
         $sig = ($caps.calibration | ConvertTo-Json -Depth 6 -Compress) + "|$($caps.compress)|$($caps.encoders -join ',')|$($caps.bench.state)|$([int]($caps.bench.percent / 10))|$($caps.bench.what -match '^paused')"
-        if ($sig -ne $script:LastCapsMsg.sig -or ((Get-Date) - $script:LastCapsMsg.at).TotalMinutes -ge 60) {
+        if ($sig -ne $script:LastCapsMsg.sig -or ((Get-Date) - $script:LastCapsMsg.at).TotalHours -ge 6) {
             try { Publish-Live $caps; $script:LastCapsMsg = @{ sig = $sig; at = Get-Date } } catch { }
         }
     }
