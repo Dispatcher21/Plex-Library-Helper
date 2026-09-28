@@ -296,7 +296,7 @@ function jobFor(v, action) {
     && (action ? j.kind === 'compress' && j.action === action : j.kind === 'quarantine')).sort((a, b) => b.created - a.created)[0];
 }
 const ACTIVE = ['queued', 'run', 'stop'];
-// The helper download is named by version (Plex-Library-Helper-0.3.4.zip); download/latest.json says which is current
+// The helper download is named by version (Plex-Library-Helper-0.4.0.exe; zips before 0.4); download/latest.json says which is current
 let helperDownload = null;
 function helperLink() {
   if (!helperDownload) return '<a href="https://github.com/Dispatcher21/Plex-Library-Helper/tree/main/download" target="_blank" rel="noopener">get the Library Helper</a>';

@@ -53,16 +53,17 @@ function Codec-Args($enc, [double]$q, [bool]$tenBit, [bool]$cpuFrames) {
 }
 
 # Which encoders actually work on this PC: a half-second test encode each (a missing graphics card or
-# driver fails straight away). Returns the ids that worked.
-function Test-Encoders([string]$ffmpeg) {
+# driver fails straight away). Returns the ids that worked; $onEach gets (id, worked) as each one finishes.
+function Test-Encoders([string]$ffmpeg, [scriptblock]$onEach) {
     $ok = @()
     foreach ($id in $Encoders.Keys) {
         $e = $Encoders[$id]
         $a = @('-nostdin', '-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=24', '-t', '0.5') + (Codec-Args $e $e.Default.normal $true $true) + @('-f', 'null', '-')
         $p = Start-Process -FilePath $ffmpeg -ArgumentList $a -NoNewWindow -PassThru -RedirectStandardError ([IO.Path]::GetTempFileName())
         $null = $p.Handle
-        if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { }; continue }
+        if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { }; if ($onEach) { & $onEach $id $false }; continue }
         if ($p.ExitCode -eq 0) { $ok += $id }
+        if ($onEach) { & $onEach $id ($p.ExitCode -eq 0) }
     }
     $ok
 }

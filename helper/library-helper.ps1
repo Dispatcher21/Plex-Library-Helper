@@ -39,7 +39,7 @@
     library-helper.ps1 -EmptyTrash        list what's in _TO_DELETE on this PC's drives and, after you type
                                           DELETE, remove it for good (what "Empty _TO_DELETE.cmd" runs)
 #>
-param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [switch]$EnableCompress, [switch]$DisableCompress, [string]$WorkDir, [switch]$EmptyTrash)
+param([switch]$Setup, [switch]$Once, [switch]$Status, [string]$ServerName, [switch]$EnableCompress, [switch]$DisableCompress, [string]$WorkDir, [switch]$EmptyTrash, [string]$Api, [string]$ApiArgs)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.3.9'
+$Version = '0.4.0'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -114,14 +114,23 @@ $script:Json.MaxJsonLength = [int]::MaxValue
 # ---------------------------------------------------------------- setup
 
 function Do-Setup {
+    Plex-SignIn {
+        param($auth)
+        Write-Host ''
+        Write-Host 'Open this link on any device where you are signed in to Plex and approve the Plex Library Helper:' -ForegroundColor Yellow
+        Write-Host $auth
+        Write-Host ''
+        try { Start-Process $auth } catch { }
+    } $null
+}
+
+# Plex sign-in (PIN flow). $onUrl gets the approval link; $choose (optional) picks one of several servers by
+# name. Keeps every other setting when signing in again.
+function Plex-SignIn([scriptblock]$onUrl, [scriptblock]$choose) {
     $clientId = [guid]::NewGuid().ToString()
     $pin = Invoke-RestMethod -Method Post -Uri 'https://plex.tv/api/v2/pins?strong=true' -Headers (Plex-Headers $clientId $null)
     $auth = 'https://app.plex.tv/auth#?' + (Q @{ clientID = $clientId; code = $pin.code; 'context[device][product]' = $Product })
-    Write-Host ''
-    Write-Host 'Open this link on any device where you are signed in to Plex and approve the Plex Library Helper:' -ForegroundColor Yellow
-    Write-Host $auth
-    Write-Host ''
-    try { Start-Process $auth } catch { }
+    & $onUrl $auth
     $token = $null; $deadline = (Get-Date).AddMinutes(15)
     while (-not $token -and (Get-Date) -lt $deadline) {
         Start-Sleep 2
@@ -135,8 +144,12 @@ function Do-Setup {
     $servers = @($res | Where-Object { $_.owned -and ($_.provides -split ',') -contains 'server' })
     if ($ServerName) { $servers = @($servers | Where-Object name -eq $ServerName) }
     if (-not $servers.Count) { throw 'No Plex server found on this account.' }
-    if ($servers.Count -gt 1) { Log ("Several servers found ({0}); using '{1}'. Pass -ServerName to choose." -f (($servers.name) -join ', '), $servers[0].name) 'WARN' }
     $srv = $servers[0]
+    if ($servers.Count -gt 1) {
+        $pick = if ($choose) { [string](& $choose @($servers | ForEach-Object { $_.name })) } else { '' }
+        $chosen = @($servers | Where-Object { $_.name -eq $pick })
+        if ($chosen.Count) { $srv = $chosen[0] } else { Log ("Several servers found ({0}); using '{1}'. Pass -ServerName to choose." -f (($servers.name) -join ', '), $servers[0].name) 'WARN' }
+    }
 
     # Prefer a plain LAN address (no DNS needed), then the secure plex.direct ones
     $cands = @()
@@ -153,7 +166,11 @@ function Do-Setup {
         serverName = $srv.name; serverId = $srv.clientIdentifier; serverUrl = $url
         agentName = $env:COMPUTERNAME; pollSeconds = 20; version = $Version
     }
-    $cfg | ConvertTo-Json | Out-File -LiteralPath $ConfigPath -Encoding UTF8
+    # signing in again keeps compression, notification and rip settings
+    if (Test-Path $ConfigPath) {
+        try { $old = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json; foreach ($p in $old.PSObject.Properties) { if (-not $cfg.Contains($p.Name)) { $cfg[$p.Name] = $p.Value } } } catch { }
+    }
+    $cfg | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ConfigPath -Encoding UTF8
     Log "Set up for server '$($srv.name)' at $url. Shares handled: $(((Share-Map).Keys) -join ', ')"
 }
 
@@ -1204,6 +1221,9 @@ function Setup-Rips {
 . (Join-Path $Root 'rips.ps1')
 . (Join-Path $Root 'live.ps1')
 . (Join-Path $Root 'bench.ps1')
+. (Join-Path $Root 'api.ps1')
+
+if ($Api) { Invoke-Api $Api $(if ($ApiArgs) { $ApiArgs } else { $env:PLH_API_ARGS }); exit 0 }   # the app's windows (Plex Library Helper.exe) use this
 
 if ($Setup) { Setup-Wizard; exit 0 }
 if ($EmptyTrash) { Empty-Trash; exit 0 }   # works without Plex settings
@@ -1241,5 +1261,12 @@ do {
     try { Live-Poll } catch { Log "Live status: $($_.Exception.Message)" 'WARN' }
     try { Bench-Poll } catch { Log "Benchmark: $($_.Exception.Message)" 'WARN' }
     if ($Once) { break }
+    # The app unpacked a newer version into this folder: stop once nothing is encoding, and the app's tray
+    # starts the helper again at once, running the new version
+    $vf = Join-Path $Root 'VERSION.txt'
+    if ((Test-Path -LiteralPath $vf) -and ([string](Get-Content -LiteralPath $vf -TotalCount 1)).Trim() -ne $Version -and -not @(Running-Workers).Count) {
+        Log "A newer version ($(([string](Get-Content -LiteralPath $vf -TotalCount 1)).Trim())) is installed here: stopping so it can start"
+        exit 0
+    }
     Start-Sleep -Seconds ([int]$Cfg.pollSeconds)
 } while ($true)

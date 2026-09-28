@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Plex Library Helper.exe: one small file for every PC. .NET Framework 4.8 is part of Windows 10/11, so
+       nothing else needs installing. The PowerShell engine (../helper) travels inside as resources. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Plex Library Helper</AssemblyName>
+    <RootNamespace>PlexLibraryHelper</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.4.0</Version>
+    <Product>Plex Library Helper</Product>
+    <Company>Plex Library Dashboard</Company>
+    <Description>Plex Library Helper</Description>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- make-helper-download.ps1 passes a copy with Windows line endings and BOMs -->
+    <EngineDir Condition="'$(EngineDir)' == ''">..\helper\</EngineDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Web" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- the engine: extracted next to the exe when it installs -->
+    <EmbeddedResource Include="$(EngineDir)library-helper.ps1;$(EngineDir)compress.ps1;$(EngineDir)encoders.ps1;$(EngineDir)bench.ps1;$(EngineDir)rips.ps1;$(EngineDir)live.ps1;$(EngineDir)api.ps1;$(EngineDir)install-helper.ps1;$(EngineDir)uninstall-helper.ps1;$(EngineDir)README.md">
+      <LogicalName>engine/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <Resource Include="app.ico" />
+  </ItemGroup>
+</Project>
+

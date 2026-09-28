@@ -1,0 +1,36 @@
+<Window x:Class="PlexLibraryHelper.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Plex Library Helper" Width="980" Height="700" MinWidth="760" MinHeight="520"
+        WindowStartupLocation="CenterScreen" Style="{StaticResource AppWindow}">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="220"/>
+      <ColumnDefinition/>
+    </Grid.ColumnDefinitions>
+    <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="16,22,16,18">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,0,0,26">
+          <Image Source="{StaticResource Logo}" Width="30" Height="30"/>
+          <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+            <TextBlock Text="Plex Library Helper" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource Fg}"/>
+            <TextBlock x:Name="SideSub" FontSize="12" Foreground="{StaticResource Fg3}"/>
+          </StackPanel>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom">
+          <Button x:Name="DashBtn" Content="Open dashboard" Style="{StaticResource Small}" HorizontalAlignment="Stretch" Margin="0,0,0,10"/>
+          <TextBlock x:Name="SideFoot" Style="{StaticResource Fine}" Margin="6,0,0,0"/>
+        </StackPanel>
+        <StackPanel>
+          <RadioButton x:Name="NavOverview" Style="{StaticResource Nav}" GroupName="nav" Content="Overview" IsChecked="True"/>
+          <RadioButton x:Name="NavEncoders" Style="{StaticResource Nav}" GroupName="nav" Content="Encoders &amp; benchmark"/>
+          <RadioButton x:Name="NavTrash" Style="{StaticResource Nav}" GroupName="nav" Content="_TO_DELETE"/>
+          <RadioButton x:Name="NavSettings" Style="{StaticResource Nav}" GroupName="nav" Content="Settings"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+    <ScrollViewer Grid.Column="1" x:Name="Scroll" VerticalScrollBarVisibility="Auto">
+      <ContentControl x:Name="Page" MaxWidth="760" HorizontalAlignment="Left" Margin="32,28,28,24"/>
+    </ScrollViewer>
+  </Grid>
+</Window>

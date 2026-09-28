@@ -218,6 +218,28 @@ different timestamps, so it compared neighbouring frames and scored ~10 low (AMF
 inputs now go through `setpts=N`. Estimates from earlier helpers may have under-reported quality.
 First real calibration on this PC (Transformers 1986 4K): AMF q20 = VMAF 96.4 at 52 fps; x265 medium CRF 16 = 96.2.
 
+### The app: one exe (0.4.0, `app/`)
+
+Owner asked to replace the command prompts with a premium UI, one file. `app/` = C# WPF for **.NET Framework 4.8**
+(in every Windows 10/11, so the exe is ~375 KB and needs nothing installed); the PowerShell engine rides inside
+as embedded resources (`engine/*`). Build: `make-helper-download.ps1` (needs the .NET 8 SDK; on this PC it's in
+`%LOCALAPPDATA%\Microsoft\dotnet`, installed with dotnet-install.ps1 because the winget one sat at its UAC prompt)
+-> `download/Plex-Library-Helper-<ver>.exe` + `latest.json`. Version comes from `$Version` in library-helper.ps1.
+- Exe run from anywhere installs/updates itself into `%LOCALAPPDATA%\Plex Library Helper` (copies itself, unpacks
+  the engine, writes VERSION.txt) and starts the installed copy. One instance per user (mutex + Show/Quit events).
+- The scheduled task still runs the engine (`library-helper.ps1`, hidden); `Start-Tray` launches `Plex Library
+  Helper.exe --tray` when present (tray.ps1 only for zip installs). The app's tray = old tray + watchdog + balloons.
+- Windows never change settings themselves: `library-helper.ps1 -Api <cmd>` (`helper/api.ps1`), args in env
+  `PLH_API_ARGS`, output lines `@@PROGRESS/@@ASK/@@RESULT/@@ERROR`. Commands: info, takeover (old zip copy's
+  config + dovi_tool), signin (`Plex-SignIn`, keeps other settings; ASK for server choice), testencoders,
+  installtool, savecompress, savenotify, sendtest, saverip, installtask, uninstall, trash, emptytrash.
+- Progress bars read `jobs\*.json` + `.status.json` directly every 2 s (state.json is only every 20 s).
+- Updates: engine exits when VERSION.txt != its `$Version` and no worker runs; the tray restarts it at once.
+- QR codes (`QrCode.cs`, byte mode, ECC M, v1-10) verified by decoding with jsQR.
+- Testing: `PLH_HOME=<folder>` = test install (no watchdog, never touches the scheduled task); `--snapshot <dir>`
+  renders every page/step to PNG; `--qr <text> <png>`. Setup flow was driven end to end with UI Automation.
+- Not yet: the in-app updater (checking latest.json), code signing (SmartScreen warns: More info > Run anyway).
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg

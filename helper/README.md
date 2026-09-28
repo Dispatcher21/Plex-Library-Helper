@@ -20,48 +20,41 @@ and to plex.tv.
 
 ## Setting it up (each PC)
 
-1. Unzip the download anywhere that stays put (for example `Documents\Plex Library Helper`).
-2. Double-click **`Set up Plex Library Helper.cmd`**. It:
-   - signs in to your Plex account: a Plex page opens, approve *Plex Library Helper*;
-   - asks **"Use this PC for encoding / compression?"** It then offers to install what compression needs
-     (ffmpeg, MKVToolNix, and dovi_tool for Dolby Vision; each only if you say yes), tests which encoders
-     work on this PC, asks **"Should this PC take processor-only jobs too?"** (4K Extreme and AV1 without
-     a graphics AV1 encoder; very slow on small PCs) and asks for a work folder. Say no to do only
-     quarantines on this PC;
-   - on the compressing PC, asks **"Send phone notifications?"**: it makes a private ntfy topic
-     name, shows it, and can send a test message (see below);
-   - starts the helper now and whenever you sign in to Windows.
+Download **`Plex-Library-Helper-<version>.exe`** from the dashboard and run it. It's one small file (no
+administrator rights needed): it installs itself in `%LOCALAPPDATA%\Plex Library Helper`, adds an icon next to
+the clock, and opens setup:
 
-Run it again any time to change the compression answer; you won't have to sign in again.
+1. **Welcome**: shows this PC; if you used the older zip version, it moves that copy's Plex sign-in and settings
+   over (nothing to redo; it waits if that copy is in the middle of a compression).
+2. **Plex sign-in**: approve *Plex Library Helper* on Plex's page in your browser.
+3. **Compression**: on or off for this PC; installs what's missing (ffmpeg, MKVToolNix, dovi_tool) with one
+   click each, tests which encoders work (graphics card and processor), whether to take processor-only jobs,
+   the work folder, and whether to run the benchmark straight away.
+4. **Phone & dashboard**: phone notifications through ntfy, with **QR codes** to scan: one subscribes your
+   phone, one opens the dashboard already connected. A PC without its own notifications (like a file server)
+   joins the main PC's topic instead (paste it; Settings shows it on the main PC).
+5. **MakeMKV rips** (only if MakeMKV is installed).
+6. **Finish**: starts the helper now and whenever you sign in to Windows.
 
-**Updating:** unzip the new download and run its setup. Over the old folder is tidiest, but if the
-browser saved it as `Plex-Library-Helper (1)` that's fine too: setup sees the older copy, takes over its
-Plex sign-in and settings (no sign-in needed), and switches Windows startup to the new folder; then you
-can delete the old one. If the old copy is in the middle of a compression, setup says so and changes
-nothing, so the encode isn't left running unattended: let it finish or Stop it in the dashboard first.
+**Updating:** run the newer exe (it replaces the installed one and restarts the helper once no compression is
+running). Running the exe again any time just opens the app.
 
-## The tray icon
+## The app
 
-The helper puts an icon in the Windows notification area (the ^ next to the clock): orange when idle,
-green while compressing or ripping, grey when paused, red if the helper isn't running. Hover for what it's
-doing; double-click to open the dashboard; right-click for **Pause all compressions / Resume**, **Run benchmark**, Status,
-the log folder, Empty _TO_DELETE, Run setup again, Restart helper and Quit. If the helper ever stops without you choosing Quit,
-the tray starts it again after 2 minutes.
+Double-click the icon next to the clock (or run the exe again):
+- **Overview**: is the helper running, Pause all compressions, and every running compression, estimate and
+  benchmark with a live progress bar, time left and why it's paused; MakeMKV rips too.
+- **Encoders & benchmark**: each encoder's measured speed and the setting it uses for each quality level;
+  Run / Stop benchmark.
+- **_TO_DELETE**: what's waiting on this PC's drives, and Empty (type DELETE to confirm).
+- **Settings**: change any setup step, restart the helper, open the logs, or Stop and remove.
 
-**Pause all compressions** (tray or dashboard > Jobs) freezes a running encode where it is and holds the
+The icon's colour shows the state (amber idle, green working, grey paused, red not running); right-click
+for Pause, Run benchmark, Empty _TO_DELETE, Settings, Restart and Quit. If the helper stops without you
+choosing Quit, the app starts it again after 2 minutes. Windows may show a balloon when a job finishes.
+
+**Pause all compressions** (app, tray or dashboard > Jobs) freezes a running encode where it is and holds the
 queue until you resume; nothing is lost.
-
-## Double-click these
-
-| File | What it does |
-|---|---|
-| `Set up Plex Library Helper.cmd` | Setup (above); run again to change settings or after updating |
-| `Check status.cmd` | Is it running, which server and drives it handles, compression on/off, which jobs it can see |
-| `Empty _TO_DELETE.cmd` | Lists what's waiting in `_TO_DELETE` on this PC's drives (dates, sizes, titles) and deletes it for good only if you choose all / older than 7 days **and** type `DELETE` |
-| `Stop and remove.cmd` | Stops it and removes it from startup (asks first) |
-
-`.ps1` files open in Notepad when double-clicked; that's Windows' default. Use the `.cmd` files above.
-
 ## How it gets jobs
 
 There's no separate server. The dashboard puts a short label on the movie in Plex
@@ -105,10 +98,10 @@ through **ntfy** (free app, no account), even with the phone locked and the dash
 For example: *Compressed: Harry Potter and the Sorcerer's Stone (2001) · 4K High: 71.3 GB → 14.7 GB (21%)*.
 Tapping it opens the dashboard.
 
-1. Run setup on the compressing PC and answer yes to **Send phone notifications?**. It shows a topic
-   name like `pld-7f3k9q2m...` and offers a test message.
-2. On the phone: install **ntfy** (Play Store / App Store), tap **+**, enter that topic, keep the
-   server as `ntfy.sh`, subscribe.
+1. In setup (or Settings > Phone & dashboard) choose **This PC sends notifications**, then **Set up my phone**.
+   It makes a private topic like `pld-7f3k9q2m...` and shows it with a QR code.
+2. On the phone: install **ntfy** (Play Store / App Store) and scan the code, or tap **+** in the app and enter
+   the topic (server `ntfy.sh`). **Send a test notification** checks it works.
 
 You also hear about **interruptions**: a compression that fails, or stops because the PC restarted
 (reported when the helper starts again). If you said yes to **pause alerts**, you get a quiet
@@ -116,14 +109,16 @@ You also hear about **interruptions**: a compression that fails, or stops becaus
 per job), and *Resumed: … after 25 min paused, about 1 h left* when it carries on.
 
 Only the movie title and the result are sent, through ntfy.sh; no file paths or Plex details. Keep the
-topic name private: anyone who knows it can read the messages. Run setup again to turn it off.
-`Check status.cmd` shows the topic if you need it again.
+topic name private: anyone who knows it can read the messages. Settings > Phone & dashboard turns it off,
+and has **Copy topic** if you need it again.
 
 ## Files in this folder
 
 | File | What it's for |
 |---|---|
-| `library-helper.ps1` | The helper itself |
+| `Plex Library Helper.exe` | The app: setup, status windows, tray icon; carries the rest |
+| `library-helper.ps1` | The helper itself (the engine, runs hidden) |
+| `api.ps1` | What the app's windows ask the engine to do |
 | `compress.ps1` | Does one compression, estimate or benchmark (started by the helper) |
 | `encoders.ps1` | The encoders it knows (AMD, NVIDIA, Intel graphics; x265, SVT-AV1 on the processor) and how it picks one |
 | `bench.ps1` | The benchmark: which films, when it runs, saving the results, telling the dashboard |
@@ -136,7 +131,7 @@ topic name private: anyone who knows it can read the messages. Run setup again t
 ## Command line (optional)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File library-helper.ps1 -Setup             # same as the .cmd
+powershell -ExecutionPolicy Bypass -File library-helper.ps1 -Setup             # the old text setup
 powershell -ExecutionPolicy Bypass -File library-helper.ps1 -Status
 powershell -ExecutionPolicy Bypass -File library-helper.ps1 -EnableCompress -WorkDir D:\_PLD_WORK
 powershell -ExecutionPolicy Bypass -File library-helper.ps1 -DisableCompress
@@ -156,8 +151,8 @@ MakeMKV exactly as before; the helper watches:
 
 The dashboard shows a **Ripping** card (disc, folder, %, speed, time left), live, from anywhere, and your
 phone gets one ntfy notification when a rip finishes. Progress travels through ntfy (a separate
-`<topic>-status` topic nobody's phone subscribes to), so each device needs to know the topic once: open
-the link setup prints (`…/#ntfy=pld-…`) on it, or paste it under **Jobs**.
+`<topic>-status` topic nobody's phone subscribes to), so each device needs to know the topic once: scan the
+dashboard QR code from setup (`…/#ntfy=pld-…`) on it, or paste the topic under **Jobs**.
 
 **Compress when finished** (optional, per rip on the card; default and presets chosen in setup): once the
 file has stopped growing, the helper asks Plex to scan it and queues a compression, 4K discs and Blu-rays
@@ -166,12 +161,11 @@ compress the season from the show. DVDs are left as they are.
 
 ## Emptying _TO_DELETE
 
-Quarantined files stay in `_TO_DELETE` until you empty it. Double-click **`Empty _TO_DELETE.cmd`** on
-the PC that owns the drive (quarantined files stay on their own drive, so run it on each PC). It shows
-every batch by drive and date with its size and the movies in it, then asks: **A** all, **O** only
-batches older than 7 days, or **N** nothing; deleting also needs you to type `DELETE`. It only removes
-the dated folders inside `_TO_DELETE`, skips anything containing a link to another folder, and records
-each deletion in `manifest.jsonl`. The tray menu opens the same window.
+Quarantined files stay in `_TO_DELETE` until you empty it. In the app on the PC that owns the drive
+(quarantined files stay on their own drive), **_TO_DELETE** lists every batch by drive and date with its size
+and the movies in it; choose batches and **Empty…**, then type `DELETE`. It only removes the dated folders
+inside `_TO_DELETE`, skips anything containing a link to another folder, and records each deletion in
+`manifest.jsonl`. The tray menu goes to the same page.
 
 **From the dashboard:** Jobs lists what's waiting in `_TO_DELETE` on each connected PC, with **Empty…**
 (choose batches, type `DELETE`). The helper on that PC deletes only the dated batches it reported, only

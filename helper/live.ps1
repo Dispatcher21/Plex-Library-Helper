@@ -156,8 +156,15 @@ function Live-Poll {
 
 # ---------------------------------------------------------------- tray icon
 
-# Start the tray icon (tray.ps1) unless one from this folder is already running
+# Start the tray icon unless one from this folder is already running: the app (Plex Library Helper.exe, which
+# also has the windows) when installed by it, else tray.ps1
 function Start-Tray {
+    $exe = Join-Path $Root 'Plex Library Helper.exe'
+    if (Test-Path -LiteralPath $exe) {
+        $mine = @(Get-Process -Name 'Plex Library Helper' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $exe } catch { $false } })
+        if (-not $mine.Count) { Start-Process -FilePath $exe -ArgumentList '--tray' | Out-Null }
+        return
+    }
     $tray = Join-Path $Root 'tray.ps1'
     if (-not (Test-Path -LiteralPath $tray)) { return }
     $running = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($tray) })

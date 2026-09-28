@@ -11,3 +11,8 @@ Thumbs.db
 
 # Packaged zips
 dist/
+
+# App build output
+app/bin/
+app/obj/
+qrtest/
