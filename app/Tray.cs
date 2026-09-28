@@ -16,7 +16,7 @@ namespace PlexLibraryHelper
     {
         readonly Forms.NotifyIcon _icon;
         readonly Icon _idle = Draw("#E5A00D"), _busy = Draw("#5FD4B0"), _paused = Draw("#9AA0A6"), _off = Draw("#FF8A80");
-        readonly Forms.ToolStripMenuItem _status, _pause, _bench, _restart;
+        readonly Forms.ToolStripMenuItem _status, _pause, _bench, _restart, _update;
         readonly DispatcherTimer _timer;
         DateTime? _downSince, _lastAutoStart;
         Dictionary<string, JobView> _lastJobs = new Dictionary<string, JobView>();
@@ -30,9 +30,15 @@ namespace PlexLibraryHelper
             _pause = new Forms.ToolStripMenuItem("Pause all compressions", null, (s, e) => { Live.SetPaused(!Live.Paused); Update(); });
             _bench = new Forms.ToolStripMenuItem("Run benchmark", null, (s, e) => ToggleBenchmark());
             _restart = new Forms.ToolStripMenuItem("Restart helper", null, (s, e) => Restart("Helper restarted"));
+            _update = new Forms.ToolStripMenuItem("Install update", null, async (s, e) => { var err = await Updater.Install(); if (err != null) Say("Update", err); }) { Visible = false, Font = new Font(Forms.Control.DefaultFont, FontStyle.Bold) };
+            Updater.Changed += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _update.Visible = Updater.Available != null;
+                if (Updater.Available != null) _update.Text = Updater.Busy ? "Updating…" : $"Install update {Updater.Available.Major}.{Updater.Available.Minor}.{Updater.Available.Build}";
+            }));
             menu.Items.AddRange(new Forms.ToolStripItem[]
             {
-                _status, new Forms.ToolStripSeparator(), open,
+                _status, _update, new Forms.ToolStripSeparator(), open,
                 new Forms.ToolStripMenuItem("Open dashboard", null, (s, e) => App.Open(Engine.Dashboard)),
                 _pause, _bench, new Forms.ToolStripSeparator(),
                 new Forms.ToolStripMenuItem("Empty _TO_DELETE…", null, (s, e) => App.ShowMain("trash")),
@@ -43,11 +49,22 @@ namespace PlexLibraryHelper
             });
             _icon = new Forms.NotifyIcon { Icon = _idle, Text = "Plex Library Helper", Visible = true, ContextMenuStrip = menu };
             _icon.DoubleClick += (s, e) => App.ShowMain();
-            _icon.BalloonTipClicked += (s, e) => App.ShowMain();
+            _icon.BalloonTipClicked += (s, e) => { App.ShowMain(_offering ? "settings" : null); _offering = false; };
+            _icon.BalloonTipClosed += (s, e) => _offering = false;
             _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             _timer.Tick += (s, e) => { try { Update(); } catch { } };
             _timer.Start();
             Update();
+        }
+
+        public void Say(string title, string text) => _icon.ShowBalloonTip(6000, title, text, Forms.ToolTipIcon.Info);
+
+        // "Ask me first": one balloon per new version; clicking it opens Settings > Updates
+        bool _offering;
+        public void OfferUpdate(string version)
+        {
+            _offering = true;
+            _icon.ShowBalloonTip(10000, "Update available", $"Plex Library Helper {version} is out. Click to install it from Settings, or use Install update in this menu.", Forms.ToolTipIcon.Info);
         }
 
         void ToggleBenchmark()

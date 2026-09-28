@@ -36,8 +36,15 @@ the clock, and opens setup:
 5. **MakeMKV rips** (only if MakeMKV is installed).
 6. **Finish**: starts the helper now and whenever you sign in to Windows.
 
-**Updating:** run the newer exe (it replaces the installed one and restarts the helper once no compression is
-running). Running the exe again any time just opens the app.
+**Updating:** the app checks the dashboard's site for new versions (a couple of minutes after it starts, then
+every 6 hours). You choose in setup or Settings > Updates:
+- **Ask me first** (default): the tray and the Overview say *Update available*, and nothing changes until you
+  click Install.
+- **Install automatically when idle**: it installs by itself, but never while a compression, estimate or
+  benchmark is running.
+
+Each download is checked against the SHA-256 fingerprint published with it and refused if it differs. Running a
+newer exe by hand also works (it replaces the installed one). Running the exe again any time just opens the app.
 
 ## The app
 

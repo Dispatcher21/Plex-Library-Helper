@@ -238,7 +238,13 @@ as embedded resources (`engine/*`). Build: `make-helper-download.ps1` (needs the
 - QR codes (`QrCode.cs`, byte mode, ECC M, v1-10) verified by decoding with jsQR.
 - Testing: `PLH_HOME=<folder>` = test install (no watchdog, never touches the scheduled task); `--snapshot <dir>`
   renders every page/step to PNG; `--qr <text> <png>`. Setup flow was driven end to end with UI Automation.
-- Not yet: the in-app updater (checking latest.json), code signing (SmartScreen warns: More info > Run anyway).
+- Updater (0.4.1, `Updater.cs`): reads latest.json 2 min after start then every 6 h; `app.json` `updates` = ask
+  (default; owner: end users may not want auto-updates on a Plex machine) | auto (installs only with no worker
+  running). Downloads to %TEMP%, requires `sha256` (written by make-helper-download.ps1) to match, runs it with
+  `--tray --updated`; the new exe installs itself (Quit event to the old one) and says "updated" in the tray.
+  Tested end to end in a test install (0.4.1 -> 0.4.2 in ~6 s; a wrong fingerprint is refused and deleted).
+  Test hooks: `PLH_UPDATE_URL`, `PLH_UPDATE_FIRST` (seconds); a PLH_HOME install has its own single-instance lock.
+- Not yet: code signing (SmartScreen warns on the first manual download: More info > Run anyway).
 
 ### Compression gotchas
 

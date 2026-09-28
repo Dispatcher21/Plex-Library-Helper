@@ -1,4 +1,4 @@
-# Builds download/Plex-Library-Helper-<version>.exe, the one file every PC runs, and download/latest.json
+﻿# Builds download/Plex-Library-Helper-<version>.exe, the one file every PC runs, and download/latest.json
 # (which file is current; the dashboard's download link and the app's updater read it). Older builds are removed.
 # The exe (app\, C# for .NET Framework 4.8) carries the PowerShell engine (helper\) inside.
 # Run after changing anything in helper\ or app\, and commit the download folder with the change.
@@ -34,7 +34,9 @@ try {
     $name = "Plex-Library-Helper-$version.exe"
     Copy-Item -LiteralPath (Join-Path $bin 'Plex Library Helper.exe') -Destination (Join-Path $out $name)
     $bytes = (Get-Item (Join-Path $out $name)).Length
-    [ordered]@{ version = $version; file = $name; bytes = $bytes; built = (Get-Date).ToString('yyyy-MM-dd') } | ConvertTo-Json |
+    # the app's updater refuses a download whose SHA-256 differs from this
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $out $name)).Hash.ToLower()
+    [ordered]@{ version = $version; file = $name; bytes = $bytes; sha256 = $sha; built = (Get-Date).ToString('yyyy-MM-dd') } | ConvertTo-Json |
         Out-File -LiteralPath (Join-Path $out 'latest.json') -Encoding ascii
     "Built download\$name (version $version, $([math]::Round($bytes / 1KB)) KB) and latest.json"
 } finally { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }

@@ -494,6 +494,11 @@ namespace PlexLibraryHelper
             var bar = Ui.Bar(0, true);
             var page = Header("Starting the helper", "It starts now and whenever you sign in to Windows, and sits in the notification area next to the clock.");
             page.Children.Add(Ui.Card(status, bar));
+            page.Children.Add(Ui.Card(Ui.T("UPDATES", "Label"),
+                Ui.T("New versions come from the dashboard's site. Should this PC install them by itself?", "Body").M(0, 0, 0, 10),
+                Ui.Wrap(Ui.Pill("Ask me first", "upd", !Updater.Auto, () => Updater.Auto = false),
+                        Ui.Pill("Install automatically when idle", "upd", Updater.Auto, () => Updater.Auto = true)),
+                Ui.T("Automatic updates never install while a compression, estimate or benchmark is running. You can change this in Settings.", "Fine").M(0, 2, 0, 0)));
             Page.Content = page;
             status.Content = Ui.T("Starting…");
             NextBtn.IsEnabled = false;

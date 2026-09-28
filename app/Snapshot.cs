@@ -36,6 +36,7 @@ namespace PlexLibraryHelper
                     main.Go(page);
                     await Task.Delay(page == "trash" ? 9000 : 3000);
                     Save(main, Path.Combine(dir, $"main-{page}.png"));
+                    if (page == "settings") { main.Scroll.ScrollToEnd(); await Task.Delay(800); Save(main, Path.Combine(dir, "main-settings-end.png")); }
                 }
                 main.Close();
                 var setup = new SetupWindow(0);

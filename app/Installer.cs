@@ -73,9 +73,9 @@ namespace PlexLibraryHelper
     // version is being installed over it).
     public static class SingleInstance
     {
-        const string MutexName = @"Local\PlexLibraryHelperApp";
-        const string ShowName = @"Local\PlexLibraryHelperApp.Show";
-        const string QuitName = @"Local\PlexLibraryHelperApp.Quit";
+        // a test install (PLH_HOME) gets its own, so it never talks to the real app
+        static readonly string Id = @"Local\PlexLibraryHelperApp" + (Installer.TestMode ? "." + Math.Abs(Installer.InstallDir.ToLowerInvariant().GetHashCode()) : "");
+        static readonly string MutexName = Id, ShowName = Id + ".Show", QuitName = Id + ".Quit";
         static Mutex _mutex;
         public static EventWaitHandle ShowEvent, QuitEvent;
 

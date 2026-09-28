@@ -77,7 +77,14 @@ namespace PlexLibraryHelper
         void Overview()
         {
             _hero = new ContentControl(); _rip = new ContentControl(); _jobsPanel = Ui.V(); _empty = new ContentControl();
-            _overview = Ui.V(Header("Overview", null), _hero, Ui.T("NOW", "Label").M(0, 10, 0, 10), _jobsPanel, _rip, _empty);
+            var banner = new ContentControl();
+            void Banner() => banner.Content = Updater.Available == null || Updater.Auto ? null
+                : new Border { Style = Ui.St("Card"), BorderBrush = Ui.Br("Accent"), Child = Ui.Split(Ui.V(Ui.T($"Update available: version {Updater.Available.Major}.{Updater.Available.Minor}.{Updater.Available.Build}", "H2"), Ui.T($"You have {Installer.VersionText}. Settings > Updates can install them automatically instead.", "Fine").M(0, 4, 0, 0)),
+                    Ui.Btn("Install", async () => { var err = await Updater.Install(); if (err != null) Dialog.Info(this, "Update", err); }, "Primary")) };
+            Action changed = () => Dispatcher.BeginInvoke(new Action(Banner));
+            Updater.Changed += changed; Closed += (s, e) => Updater.Changed -= changed;
+            Banner();
+            _overview = Ui.V(Header("Overview", null), banner, _hero, Ui.T("NOW", "Label").M(0, 10, 0, 10), _jobsPanel, _rip, _empty);
             Page.Content = _overview;
         }
 
@@ -333,6 +340,40 @@ namespace PlexLibraryHelper
             list.Content = Ui.V(Ui.Card(v), Ui.Split(total, go).M(0, 4, 0, 0));
         }
 
+        // ================================================================ updates (Settings, and a banner on Overview)
+
+        // The choice (ask first / automatic), where things stand, and Check now / Install
+        UIElement UpdatesBox()
+        {
+            var state = new ContentControl();
+            var box = Ui.V(
+                Ui.T("Updates come from the dashboard's site. Each download is checked against the fingerprint published with it before it's installed, and nothing is installed while a compression, estimate or benchmark is running.", "Fine").M(0, 0, 0, 12),
+                Ui.Wrap(Ui.Pill("Ask me first", "upd", !Updater.Auto, () => Updater.Auto = false),
+                        Ui.Pill("Install automatically when idle", "upd", Updater.Auto, () => Updater.Auto = true)),
+                state);
+            void Draw()
+            {
+                UIElement line;
+                if (Updater.Busy) line = Ui.V(Ui.T(Updater.Available != null ? "Downloading and installing… the app restarts by itself." : "Checking…", "Fine"), Ui.Bar(0, true));
+                else if (Updater.Available != null)
+                {
+                    var v = $"{Updater.Available.Major}.{Updater.Available.Minor}.{Updater.Available.Build}";
+                    var busy = Live.Jobs().Any();
+                    line = Ui.Split(Ui.Status("warn", $"Version {v} is available (you have {Installer.VersionText})" + (busy ? ": it installs when the running job finishes" : "")),
+                        Ui.Btn("Install now", async () => { var err = await Updater.Install(); if (err != null) Dialog.Info(this, "Update", err); }, "Primary"));
+                }
+                else if (Updater.Error != null) line = Ui.Split(Ui.Status("bad", Updater.Error), Ui.Btn("Check now", async () => await Updater.Check(), "Small"));
+                else line = Ui.Split(Ui.Status("ok", $"Up to date: version {Installer.VersionText}" + (Updater.CheckedAt.HasValue ? $" (checked {Updater.CheckedAt:HH:mm})" : "")),
+                    Ui.Btn("Check now", async () => await Updater.Check(), "Small"));
+                state.Content = ((FrameworkElement)line).M(0, 6, 0, 0);
+            }
+            Action changed = () => Dispatcher.BeginInvoke(new Action(Draw));
+            Updater.Changed += changed;
+            box.Unloaded += (s, e) => Updater.Changed -= changed;
+            Draw();
+            return box;
+        }
+
         // ================================================================ settings
 
         void Settings()
@@ -358,6 +399,8 @@ namespace PlexLibraryHelper
                 ("Topic", Val(topic == null ? "none" : topic.Substring(0, Math.Min(8, topic.Length)) + "… (private)"))), copy), 3));
             if (rip != null) page.Children.Add(Section("MakeMKV rips", Ui.Rows(("Rip progress", Val(rip.B("enabled") ? "Shown on the dashboard" : "Off")),
                 ("After a rip", Val(rip.B("autoCompress") ? $"Compress: 4K {Presets.Label(rip.S("preset4k"))}, Blu-ray {Presets.Label(rip.S("presetHD"))}" : "Nothing automatic"))), 4));
+
+            page.Children.Add(Section("Updates", (FrameworkElement)UpdatesBox(), -1));
 
             var status = Ui.T("", fg: Ui.Br("Fg"));
             var helper = Ui.V(Ui.Rows(("Version", Val(Installer.VersionText)), ("Installed in", Val(Engine.Root)), ("Starts with Windows", status)),

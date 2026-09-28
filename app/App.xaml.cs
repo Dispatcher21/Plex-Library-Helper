@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -28,13 +29,19 @@ namespace PlexLibraryHelper
             if (e.Args.Length >= 3 && e.Args[0] == "--qr") { Snapshot.Qr(e.Args[1], e.Args[2]); Shutdown(); return; }
             if (e.Args.Length >= 2 && e.Args[0] == "--snapshot") { Snapshot.Run(e.Args[1]); return; }
 
-            if (!Installer.RunningFromInstall && !Installer.TestMode)
+            var updated = e.Args.Contains("--updated");   // started by the updater
+            if (!Installer.RunningFromInstall && (!Installer.TestMode || updated))
             {
                 try
                 {
                     var installed = Installer.InstalledVersion();
-                    if (installed == null || installed < Installer.MyVersion) Installer.Install();
-                    Process.Start(new ProcessStartInfo(Installer.InstalledExe, trayOnly ? "--tray" : "--installed") { UseShellExecute = false });
+                    var fresh = installed == null || installed < Installer.MyVersion;
+                    if (fresh) Installer.Install();
+                    var args = new List<string>();
+                    if (trayOnly) args.Add("--tray");
+                    if (fresh) args.Add("--installed");
+                    if (fresh && updated) args.Add("--updated");
+                    Process.Start(new ProcessStartInfo(Installer.InstalledExe, string.Join(" ", args)) { UseShellExecute = false });
                 }
                 catch (Exception ex) { MessageBox.Show(ex.Message, "Plex Library Helper", MessageBoxButton.OK, MessageBoxImage.Error); }
                 Shutdown(); return;
@@ -53,7 +60,9 @@ namespace PlexLibraryHelper
 
             if (!Engine.Configured || (!trayOnly && !Live.TaskExists())) ShowSetup();
             else if (!trayOnly) ShowMain();
-            if (e.Args.Contains("--installed") && Engine.Configured && Live.TaskExists()) Task.Run(() => AfterUpdate());
+            if (e.Args.Contains("--installed") && Engine.Configured && !Installer.TestMode && Live.TaskExists()) Task.Run(() => AfterUpdate());
+            if (updated) TrayIcon.Say("Plex Library Helper updated", $"Now on version {Installer.VersionText}.");
+            Updater.Start();
         }
 
         // A new version was just unpacked: restart the helper so it runs the new engine (unless it's in the
