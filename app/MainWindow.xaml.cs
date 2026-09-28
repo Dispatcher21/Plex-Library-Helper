@@ -88,18 +88,19 @@ namespace PlexLibraryHelper
             var paused = Live.Paused;
             var compress = cfg?.O("compress")?.B("enabled") ?? false;
             // hero: state, where, and the main actions (rebuilt only when something in it changes)
-            var heroSig = $"{alive}|{paused}|{compress}|{cfg?.S("serverName")}|{s?.S("version")}";
-            if (heroSig != _heroSig) { _heroSig = heroSig; Hero(s, alive, paused, compress, cfg); }
+            var starting = !alive && Live.Starting();
+            var heroSig = $"{alive}|{starting}|{paused}|{compress}|{cfg?.S("serverName")}|{s?.S("version")}";
+            if (heroSig != _heroSig) { _heroSig = heroSig; Hero(s, alive, starting, paused, compress, cfg); }
             UpdateJobs(s, paused, compress);
         }
 
-        void Hero(Dictionary<string, object> s, bool alive, bool paused, bool compress, Dictionary<string, object> cfg)
+        void Hero(Dictionary<string, object> s, bool alive, bool starting, bool paused, bool compress, Dictionary<string, object> cfg)
         {
-            var state = !alive ? Ui.Status("bad", "Not running") : paused ? Ui.Status("off", "Paused: no compression runs until you resume") : Ui.Status("ok", "Running");
+            var state = starting ? Ui.Status("busy", "Starting…") : !alive ? Ui.Status("bad", "Not running") : paused ? Ui.Status("off", "Paused: no compression runs until you resume") : Ui.Status("ok", "Running");
             ((TextBlock)state.Children[1]).FontSize = 17; ((TextBlock)state.Children[1]).FontWeight = FontWeights.SemiBold;
             var sub = Ui.T($"{Environment.MachineName} · Plex server {cfg?.S("serverName") ?? "?"} · helper {s?.S("version") ?? Installer.VersionText}{(compress ? " · compresses" : " · quarantines only")}", "Fine").M(17, 4, 0, 0);
             var buttons = Ui.H();
-            if (!alive) buttons.Children.Add(Ui.Btn("Start helper", async () => { SideFoot.Text = "Starting…"; await Task.Run(() => Live.RestartHelper()); Tick(); }, "Primary"));
+            if (!alive && !starting) buttons.Children.Add(Ui.Btn("Start helper", async () => { SideFoot.Text = "Starting…"; await Task.Run(() => Live.RestartHelper()); Tick(); }, "Primary"));
             else if (compress) buttons.Children.Add(Ui.Btn(paused ? "Resume compressions" : "Pause all compressions", () => { Live.SetPaused(!paused); Tick(); }, paused ? "Primary" : null));
             _hero.Content = new Border { Style = Ui.St("Card"), Child = Ui.Split(Ui.V(state, sub), buttons) };
         }

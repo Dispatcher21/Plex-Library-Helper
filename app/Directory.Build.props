@@ -1,0 +1,7 @@
+﻿<Project>
+  <!-- Compiler scratch files outside OneDrive (the repo lives there; every build churned hundreds of files,
+       which OneDrive reports as deletions) -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(LOCALAPPDATA)\Temp\plex-library-helper-build\obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

@@ -417,16 +417,33 @@ function movieDetail(e) {
 
 let jobTimer = null;
 let lastStates = new Map(); // job -> state at the previous refresh, to spot jobs that just finished
+// Reading jobs from Plex: busy (with when it started), which servers failed last time and why, when it last worked
+const jobsLoad = { busy: false, seq: 0, errors: {}, at: 0 };
 async function refreshJobs() {
   const before = new Map(state.jobs.map((j) => [j.tag.split(':').slice(0, 2).join(':'), j.state]));
   if (state.demo) {
     state.jobs = [...(state.demoJobs?.jobs || [])];
   } else {
-    const all = [];
-    await Promise.all(Object.values(state.servers).filter((s) => s.api).map(async (s) => {
-      try { all.push(...await jobsApi.fetchJobs(s.api, s.id)); } catch (err) { console.warn(`Couldn't read jobs from ${s.name}`, err); }
+    const seq = ++jobsLoad.seq;
+    jobsLoad.busy = true;
+    if ($('jobs').open) renderJobs();
+    const servers = Object.values(state.servers).filter((s) => s.api);
+    const results = await Promise.all(servers.map(async (s) => {
+      try { return { s, jobs: await jobsApi.fetchJobs(s.api, s.id) }; } catch (err) { return { s, err }; }
     }));
+    if (seq !== jobsLoad.seq) return;   // a newer refresh started meanwhile; it reports
+    const all = []; const errors = {};
+    for (const r of results) {
+      if (r.jobs) { all.push(...r.jobs); continue; }
+      console.warn(`Couldn't read jobs from ${r.s.name}`, r.err);
+      errors[r.s.name] = r.err?.name === 'AbortError' ? 'timed out' : (r.err?.message || 'failed');
+      all.push(...state.jobs.filter((j) => j.serverId === r.s.id));   // keep the last list rather than showing none
+    }
+    // just-sent jobs Plex didn't list yet (a slow relay read can start before the label was added)
+    for (const j of state.jobs) if (j.sent && !all.some((x) => x.tag.toLowerCase() === j.tag.toLowerCase())) all.push(j);
     state.jobs = all;
+    jobsLoad.busy = false; jobsLoad.errors = errors;
+    if (Object.keys(errors).length < results.length || !results.length) jobsLoad.at = Date.now();
   }
   // A finished quarantine or compression changes files, so rescan (estimates don't)
   const finished = state.jobs.some((j) => j.state === 'done' && j.action !== 'ce' && before.get(j.tag.split(':').slice(0, 2).join(':')) !== 'done' && before.size);
@@ -444,6 +461,29 @@ async function refreshJobs() {
   if ($('compress').open) renderCompress();
   clearTimeout(jobTimer);
   if (state.jobs.some((j) => ACTIVE.includes(j.state))) jobTimer = setTimeout(refreshJobs, state.demo ? 1000 : 10000);
+  else if (Object.keys(jobsLoad.errors).length && $('jobs').open) jobTimer = setTimeout(refreshJobs, 20000);   // try again while you're looking
+}
+
+// A job this page just sent: list it straight away (Plex confirms it on the next read)
+function listSent(job, title, year) {
+  if (!job || state.demo) return;
+  const jobs = Array.isArray(job) ? job : [job];
+  for (const j of jobs) state.jobs.push({ ...j, title, year });
+  renderJobsButton();
+}
+
+// The line above the job list: loading (and why it may be slow), a failed read, or when it was last read
+function jobsStatusLine() {
+  if (state.demo) return '';
+  const relay = Object.values(state.servers).filter((s) => s.api && s.relay).map((s) => s.name);
+  const slow = relay.length ? ` Connected to ${esc(relay.join(', '))} through Plex relay, which is slow: this can take up to a minute.` : '';
+  if (jobsLoad.busy) return `<div class="jobload"><span class="spin" aria-hidden="true"></span><span>Loading jobs from Plex…${slow}</span></div>`;
+  const errs = Object.entries(jobsLoad.errors);
+  if (errs.length) {
+    return `<div class="jobload warn"><span>Couldn't read jobs from ${errs.map(([n, m]) => `${esc(n)} (${esc(m)})`).join(', ')}${jobsLoad.at ? `: showing the list from ${timeAgo(jobsLoad.at)}` : ''}.${relay.length ? ' Plex relay is slow and sometimes times out; it tries again by itself.' : ''}</span><button class="btn small" data-jobsretry>Try again</button></div>`;
+  }
+  if (jobsLoad.at) return `<div class="jobload fine"><span>Updated ${timeAgo(jobsLoad.at)}${relay.length ? ' · via Plex relay (slow)' : ''}</span><button class="btn small ghost" data-jobsretry>Refresh</button></div>`;
+  return '';
   if (finished && !state.demo) setTimeout(sync, 8000); // let Plex notice the change, then rescan
 }
 
@@ -662,15 +702,16 @@ function renderJobs() {
     <div class="sub fine notifyrow">${ripControl()}</div>
     ${liveSection()}</div>
     <button class="btn ghost x" data-close aria-label="Close">Close</button></div>
-    <div class="db">${list.length ? list.map((j, i) => {
+    <div class="db">${jobsStatusLine()}${list.length ? list.map((j, i) => {
       const d = jobDescription(j);
-      const btn = j.state === 'queued' ? `<button class="btn small" data-cancel="${i}">Cancel</button>`
+      const btn = j.sent ? '<span class="fine">sent</span>'
+        : j.state === 'queued' ? `<button class="btn small" data-cancel="${i}">Cancel</button>`
         : j.state === 'run' && j.kind === 'compress' ? `<button class="btn small danger" data-stop="${i}">Stop</button>`
           : (j.state === 'done' || j.state === 'fail') ? `<button class="btn small ghost" data-clear="${i}">Clear</button>` : '';
       return `<div class="jobrow"><span class="pill ${j.state === 'stop' ? 'queued' : j.state}">${jobsApi.STATES[j.state] || esc(j.state)}</span>
         <div><div class="t">${esc(d.what)} · ${esc(j.title)}${j.year ? ` (${j.year})` : ''}</div><div class="m">${esc(d.where)} · ${timeAgo(j.created)}${d.info ? ` · ${esc(d.info)}` : ''}</div>
         ${d.percent !== null ? `<div class="bar"><i style="width:${Math.max(2, Math.min(100, d.percent))}%"></i></div>` : ''}</div>${btn}</div>`;
-    }).join('') : '<p class="empty">No jobs yet. Open a movie and choose Quarantine or Compress on a copy.</p>'}</div>`;
+    }).join('') : jobsLoad.busy && !state.demo ? '' : '<p class="empty">No jobs yet. Open a movie and choose Quarantine or Compress on a copy.</p>'}</div>`;
   $('jobs-body').dataset.order = JSON.stringify(list.map((j) => j.tag));
 }
 
@@ -712,7 +753,7 @@ async function runQuarantine() {
       else {
         const api = state.servers[v.serverId]?.api;
         if (!api) throw new Error(`${state.servers[v.serverId]?.name || 'That server'} isn't connected right now.`);
-        await jobsApi.queueQuarantine(api, v, actionFor(v, e, versions));
+        listSent(await jobsApi.queueQuarantine(api, v, actionFor(v, e, versions)), e.title, e.year);
       }
     } catch (err) { errors.push(`${v.res} ${fmtSize(v.size)}: ${err.message}`); }
   }
@@ -883,7 +924,7 @@ async function runShowQuarantine() {
       else {
         const api = state.servers[show.serverId]?.api;
         if (!api) throw new Error(`${state.servers[show.serverId]?.name || 'That server'} isn't connected right now.`);
-        await jobsApi.queueShowQuarantine(api, show, vs, action, scope);
+        listSent(await jobsApi.queueShowQuarantine(api, show, vs, action, scope), show.title, show.year);
       }
     } catch (err) { errors.push(err.message); }
   }
@@ -1059,12 +1100,12 @@ async function queueCompression(action) {
     else if (c.v.show) {
       const api = state.servers[c.v.serverId]?.api;
       if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
-      await jobsApi.queueShowCompress(api, c.v, action, opts, c.v.scope);
+      listSent(await jobsApi.queueShowCompress(api, c.v, action, opts, c.v.scope), c.e.title, c.e.year);
     }
     else {
       const api = state.servers[c.v.serverId]?.api;
       if (!api) throw new Error(`${state.servers[c.v.serverId]?.name || 'That server'} isn't connected right now.`);
-      await jobsApi.queueCompress(api, c.v, action, opts);
+      listSent(await jobsApi.queueCompress(api, c.v, action, opts), c.e.title, c.e.year);
     }
     c.busy = false;
     if (action === 'c') { $('compress').close(); cctx = null; }
@@ -1285,6 +1326,7 @@ function bind() {
       try { if (state.demo) rips.demoCommand(cmd); else await rips.command(cmd); } catch (err) { alert(err.message); renderJobs(); }
       return;
     }
+    if (ev.target.closest('[data-jobsretry]')) { refreshJobs(); return; }
     const tr = ev.target.closest('[data-trash]');
     if (tr) { $('jobs').close(); openTrashConfirm(tr.dataset.trash); return; }
     if (ev.target.closest('[data-ripoff]')) { rips.disconnect(); rips.stop(); renderRip(); renderJobs(); return; }

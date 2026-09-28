@@ -234,3 +234,12 @@ details.dupeps h4 { display: flex; gap: 8px; align-items: center; flex-wrap: wra
   .dh .poster { width: 64px; }
   .seasons .hide-sm { display: none; }
 }
+
+/* Jobs: loading / failed / last updated line */
+.jobload { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; margin-bottom: 10px; border-radius: 8px; background: var(--raised); color: var(--fg2); font-size: 13px; }
+.jobload > span:not(.spin) { flex: 1; }
+.jobload.warn { background: var(--dup-bg); color: var(--fg); }
+.jobload.fine { background: none; padding: 0 2px; color: var(--fg3); font-size: 12px; }
+.spin { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }

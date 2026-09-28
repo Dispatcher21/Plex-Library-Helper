@@ -77,6 +77,7 @@ namespace PlexLibraryHelper
 
             if (!Live.HelperAlive(s))
             {
+                if (Live.Starting()) { _icon.Icon = _idle; _icon.Text = "Plex Library Helper: starting"; _status.Text = "Starting…"; _downSince = null; return; }
                 _icon.Icon = _off; _icon.Text = "Plex Library Helper: not running"; _status.Text = "Not running"; _restart.Text = "Start helper";
                 // Watchdog: a helper down for 2 minutes is started again, at most every 10 minutes. It also
                 // restarts at once after an update left it stopped (VERSION.txt newer than what it runs).
@@ -87,7 +88,7 @@ namespace PlexLibraryHelper
                 if (((DateTime.Now - _downSince.Value).TotalMinutes >= 2 || updated) && quiet) { _lastAutoStart = DateTime.Now; Restart("The helper had stopped"); }
                 return;
             }
-            _downSince = null; _restart.Text = "Restart helper";
+            _downSince = null; _restart.Text = "Restart helper"; Live.Reported();
             var parts = new List<string>(); var lines = new List<string>();
             foreach (var j in jobs)
             {

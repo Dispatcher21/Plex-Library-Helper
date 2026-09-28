@@ -12,13 +12,15 @@
     <RootNamespace>PlexLibraryHelper</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <Product>Plex Library Helper</Product>
     <Company>Plex Library Dashboard</Company>
     <Description>Plex Library Helper</Description>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- scratch files live outside OneDrive now (Directory.Build.props); ignore any old obj/bin left in here -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
     <!-- make-helper-download.ps1 passes a copy with Windows line endings and BOMs -->
     <EngineDir Condition="'$(EngineDir)' == ''">..\helper\</EngineDir>
   </PropertyGroup>

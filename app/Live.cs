@@ -119,6 +119,18 @@ namespace PlexLibraryHelper
 
         // ---- the scheduled task that runs the helper
         public static bool TaskExists() => Schtasks($"/Query /TN \"{Engine.TaskName}\"", out _) == 0;
+        // The task is running but the helper hasn't reported yet (it takes ~15 s after starting); cached, schtasks is slowish
+        // At most 90 s: a helper that stays silent longer is hung, and the watchdog should restart it.
+        static DateTime _taskCheckedAt; static bool _taskWasRunning; static DateTime? _startSeen;
+        public static bool Starting()
+        {
+            if (Installer.TestMode) return false;
+            if ((DateTime.Now - _taskCheckedAt).TotalSeconds > 8) { _taskWasRunning = TaskRunning(); _taskCheckedAt = DateTime.Now; }
+            if (!_taskWasRunning) { _startSeen = null; return false; }
+            if (_startSeen == null) _startSeen = DateTime.Now;
+            return (DateTime.Now - _startSeen.Value).TotalSeconds < 90;
+        }
+        public static void Reported() => _startSeen = null;   // the helper wrote its state: next silence counts afresh
         public static bool TaskRunning() => Schtasks($"/Query /TN \"{Engine.TaskName}\" /FO CSV /NH", out var o) == 0 && o.Contains("\"Running\"");
 
         // Stop (if running), wait until Windows has really stopped it, start, check it came back. Starting too

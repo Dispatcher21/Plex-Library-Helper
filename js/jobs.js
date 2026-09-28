@@ -38,7 +38,12 @@ export async function queueQuarantine(api, v, action = 'q') {
   const sectionId = await sectionOf(api, v);
   const tag = `${PREFIX}${newId()}:${action}:${v.mediaId}:queued`;
   await api.addLabel(sectionId, v.ratingKey, tag);
-  return parse(tag);
+  return sent(tag, v.serverId, sectionId, v.ratingKey, 1);
+}
+
+// A job just sent, filled in like fetchJobs' ones, so it can be listed before Plex is read again
+function sent(tag, serverId, sectionId, ratingKey, type) {
+  return { ...parse(tag), serverId, sectionId: String(sectionId), type, show: type === 2, ratingKey: String(ratingKey), sent: true };
 }
 
 // action 'c' compress, 'ce' estimate; options from compress.encodeOptions()
@@ -46,7 +51,7 @@ export async function queueCompress(api, v, action, options) {
   const sectionId = await sectionOf(api, v);
   const tag = `${CPREFIX}${newId()}:${action}:${v.mediaId}:queued:${options}`;
   await api.addLabel(sectionId, v.ratingKey, tag);
-  return parse(tag);
+  return sent(tag, v.serverId, sectionId, v.ratingKey, 1);
 }
 
 // Show jobs: labels on the show, listing episode copies (media ids). One label per drive, so one helper
@@ -62,7 +67,7 @@ export async function queueShowQuarantine(api, show, versions, action, scope) {
       const chunk = group.slice(i, i + IDS_PER_LABEL);
       const tag = `${PREFIX}${newId()}:${action}:sh${show.ratingKey}:queued:ids=${chunk.map((v) => v.mediaId).join('+')};n=${chunk.length};s=${scope}`;
       await api.addLabel(show.sectionId, show.ratingKey, tag, 2);
-      queued.push(parse(tag));
+      queued.push(sent(tag, show.serverId, show.sectionId, show.ratingKey, 2));
     }
   }
   return queued;
@@ -72,7 +77,7 @@ export async function queueShowQuarantine(api, show, versions, action, scope) {
 export async function queueShowCompress(api, show, action, options, scope) {
   const tag = `${CPREFIX}${newId()}:${action}:sh${show.ratingKey}:queued:${options};s=${scope}`;
   await api.addLabel(show.sectionId, show.ratingKey, tag, 2);
-  return parse(tag);
+  return sent(tag, show.serverId, show.sectionId, show.ratingKey, 2);
 }
 
 // Ask the helper to stop a running compression: same job, state "stop" (new label first, then remove the old)
@@ -82,18 +87,22 @@ export async function stopJob(api, job) {
   await api.removeLabel(job.sectionId, job.ratingKey, job.tag, job.type);
 }
 
+// Every job label on every movie/show library. One request per label, so they go 6 at a time: through
+// Plex's relay each request can take a second or two, and one after another took up to a minute.
 export async function fetchJobs(api, serverId) {
-  const jobs = [];
   const sections = (await api.sections()).filter((s) => s.type === 'movie' || s.type === 'show');
-  for (const s of sections) {
-    const type = s.type === 'show' ? 2 : 1;
-    const labels = (await api.sectionLabels(s.key)).filter((l) => parse(l.title));
-    for (const l of labels) {
-      const j = parse(l.title); if (!j) continue;
+  const perSection = await Promise.all(sections.map(async (s) => ({ s, labels: (await api.sectionLabels(s.key)).filter((l) => parse(l.title)) })));
+  const tasks = perSection.flatMap(({ s, labels }) => labels.map((l) => ({ s, l, type: s.type === 'show' ? 2 : 1 })));
+  const jobs = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(6, tasks.length) }, async () => {
+    while (next < tasks.length) {
+      const { s, l, type } = tasks[next++];
+      const j = parse(l.title);
       const items = await api.itemsWithLabel(s.key, l.key, type);
       for (const it of items) jobs.push({ ...j, serverId, sectionId: String(s.key), type, show: type === 2, ratingKey: String(it.ratingKey), title: it.title, year: it.year });
     }
-  }
+  }));
   return jobs;
 }
 
