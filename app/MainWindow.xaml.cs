@@ -71,12 +71,12 @@ namespace PlexLibraryHelper
 
         // ================================================================ overview
 
-        StackPanel _overview, _jobsPanel; ContentControl _hero, _rip, _empty; string _heroSig;
+        StackPanel _overview, _jobsPanel; ContentControl _hero, _rip, _empty, _downloads; string _heroSig;
         readonly Dictionary<string, JobCard> _cards = new Dictionary<string, JobCard>();
 
         void Overview()
         {
-            _hero = new ContentControl(); _rip = new ContentControl(); _jobsPanel = Ui.V(); _empty = new ContentControl();
+            _hero = new ContentControl(); _rip = new ContentControl(); _jobsPanel = Ui.V(); _empty = new ContentControl(); _downloads = new ContentControl(); _torSig = null;
             var banner = new ContentControl();
             void Banner() => banner.Content = Updater.Available == null || Updater.Auto ? null
                 : new Border { Style = Ui.St("Card"), BorderBrush = Ui.Br("Accent"), Child = Ui.Split(Ui.V(Ui.T($"Update available: version {Updater.Available.Major}.{Updater.Available.Minor}.{Updater.Available.Build}", "H2"), Ui.T($"You have {Installer.VersionText}. Settings > Updates can install them automatically instead.", "Fine").M(0, 4, 0, 0)),
@@ -84,7 +84,7 @@ namespace PlexLibraryHelper
             Action changed = () => Dispatcher.BeginInvoke(new Action(Banner));
             Updater.Changed += changed; Closed += (s, e) => Updater.Changed -= changed;
             Banner();
-            _overview = Ui.V(Header("Overview", null), banner, _hero, Ui.T("NOW", "Label").M(0, 10, 0, 10), _jobsPanel, _rip, _empty);
+            _overview = Ui.V(Header("Overview", null), banner, _hero, Ui.T("NOW", "Label").M(0, 10, 0, 10), _jobsPanel, _rip, _downloads, _empty);
             Page.Content = _overview;
         }
 
@@ -99,6 +99,51 @@ namespace PlexLibraryHelper
             var heroSig = $"{alive}|{starting}|{paused}|{compress}|{cfg?.S("serverName")}|{s?.S("version")}";
             if (heroSig != _heroSig) { _heroSig = heroSig; Hero(s, alive, starting, paused, compress, cfg); }
             UpdateJobs(s, paused, compress);
+            UpdateTorrents(s);
+        }
+
+        // ---- qBittorrent: header (state, speeds, button) redrawn only when it changes; the bars every tick
+        string _torSig; bool _torFetching; StackPanel _torRows; TextBlock _torSpeeds;
+        async void UpdateTorrents(Dictionary<string, object> s)
+        {
+            var port = Live.TorrentPort();
+            if (port == null) { _downloads.Content = null; _torSig = null; return; }
+            if (_torFetching) return;
+            _torFetching = true;
+            var list = await Live.Torrents(port.Value);
+            _torFetching = false;
+            if (_overview == null) return;
+            var ts = s?.O("torrents");
+            var held = Live.TorrentsHeld;
+            var slowed = ts != null && ts.B("slowed");
+            var why = held ? "Slowed down from the app, tray or dashboard" : slowed && ts.B("byHelper") ? "Slowed down: " + ts.S("why") : slowed ? "qBittorrent's speed limit is on" : null;
+            var sig = $"{list != null}|{held}|{why}";
+            if (sig != _torSig)
+            {
+                _torSig = sig;
+                if (list == null) { _downloads.Content = Ui.Card(Ui.T("qBittorrent", "H2"), Ui.T("Not running (or its Web UI isn't set up: Settings > qBittorrent).", "Fine").M(0, 4, 0, 0)); return; }
+                _torRows = Ui.V(); _torSpeeds = Ui.T("", "Fine");
+                var btn = Ui.Btn(held ? "Back to normal" : "Slow down now", () => { Live.SetTorrentsHeld(!held); _torSig = null; }, "Small");
+                _downloads.Content = new Border { Style = Ui.St("Card"), Child = Ui.V(
+                    Ui.Split(Ui.V(Ui.T("qBittorrent", "H2"), _torSpeeds.M(0, 2, 0, 0)), btn),
+                    why == null ? null : Ui.Status("warn", why).M(0, 10, 0, 0), _torRows) };
+            }
+            if (list == null) return;
+            double dl = list.Sum(t => t.D("dlspeed")), up = list.Sum(t => t.D("upspeed"));
+            var active = new[] { "Downloading", "Stalled", "Getting details", "Queued", "Checking" };
+            int downloading = list.Count(t => t.D("progress") < 1 && active.Contains(Live.TorrentState(t.S("state"))));
+            int seeding = list.Count(t => Live.TorrentState(t.S("state")) == "Seeding");
+            _torSpeeds.Text = $"↓ {Live.Rate(dl)} · ↑ {Live.Rate(up)} · {downloading} downloading, {seeding} seeding";
+            _torRows.Children.Clear();
+            var rows = list.Where(t => t.D("progress") < 1).OrderBy(t => Live.TorrentState(t.S("state")) == "Paused" ? 1 : 0).ThenByDescending(t => t.D("added_on")).Take(6).ToList();
+            if (rows.Count == 0) _torRows.Children.Add(Ui.T("Nothing downloading.", "Fine").M(0, 10, 0, 0));
+            foreach (var t in rows)
+            {
+                var pct = t.D("progress") * 100; var eta = t.D("eta");
+                var bar = Ui.Bar(pct); bar.Foreground = Live.TorrentState(t.S("state")) == "Paused" ? Ui.Br("Fg3") : Ui.Br("Link");
+                _torRows.Children.Add(Ui.V(Ui.Split(Ui.T(t.S("name"), "Body", fg: Ui.Br("Fg")), Ui.T($"{pct:0.#}%", "Fine").M(12, 0, 0, 0)), bar,
+                    Ui.T($"{Live.TorrentState(t.S("state"))} · {Live.Size(t.D("size"))}{(t.D("dlspeed") > 0 ? " · " + Live.Rate(t.D("dlspeed")) : "")}{(eta > 0 && eta < 8640000 ? " · about " + Live.Duration(eta) + " left" : "")}", "Fine")).M(0, 12, 0, 0));
+            }
         }
 
         void Hero(Dictionary<string, object> s, bool alive, bool starting, bool paused, bool compress, Dictionary<string, object> cfg)
@@ -400,6 +445,16 @@ namespace PlexLibraryHelper
             if (rip != null) page.Children.Add(Section("MakeMKV rips", Ui.Rows(("Rip progress", Val(rip.B("enabled") ? "Shown on the dashboard" : "Off")),
                 ("After a rip", Val(rip.B("autoCompress") ? $"Compress: 4K {Presets.Label(rip.S("preset4k"))}, Blu-ray {Presets.Label(rip.S("presetHD"))}" : "Nothing automatic"))), 4));
 
+            var tor = cfg.O("torrent");
+            if (tor != null || File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"qBittorrent\qBittorrent.ini")))
+            {
+                var tr = tor?.O("rules");
+                var names = new List<string>();
+                if (tr != null) { if (tr.B("plex")) names.Add("Plex transcoding"); if (tr.B("plexall")) names.Add("anything playing on Plex"); if (tr.B("game")) names.Add("full-screen games"); if (tr.B("idle")) names.Add("PC in use"); if (tr.B("night")) names.Add("outside the overnight window"); }
+                var on = tor != null && tor.B("enabled");
+                page.Children.Add(Section("qBittorrent", Ui.Rows(("Downloads", Val(on ? "Shown here and on the dashboard" : "Not watched")),
+                    ("Slows down for", Val(on ? (names.Count > 0 ? string.Join(", ", names) : "nothing (only when you ask)") : "–"))), 5));
+            }
             page.Children.Add(Section("Updates", (FrameworkElement)UpdatesBox(), -1));
 
             var status = Ui.T("", fg: Ui.Br("Fg"));

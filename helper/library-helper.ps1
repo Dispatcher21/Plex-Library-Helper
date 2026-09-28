@@ -48,7 +48,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $Root 'config.json'
 $LogDir = Join-Path $Root 'logs'
 $Product = 'Plex Library Helper'
-$Version = '0.4.1'
+$Version = '0.4.2'
 $QuarantineDir = '_TO_DELETE'
 $LabelPrefix = 'pld:'
 $CompressPrefix = 'pldc:'
@@ -1221,6 +1221,8 @@ function Setup-Rips {
 . (Join-Path $Root 'rips.ps1')
 . (Join-Path $Root 'live.ps1')
 . (Join-Path $Root 'bench.ps1')
+. (Join-Path $Root 'pause.ps1')
+. (Join-Path $Root 'torrent.ps1')
 . (Join-Path $Root 'api.ps1')
 
 if ($Api) { Invoke-Api $Api $(if ($ApiArgs) { $ApiArgs } else { $env:PLH_API_ARGS }); exit 0 }   # the app's windows (Plex Library Helper.exe) use this
@@ -1258,6 +1260,7 @@ do {
     try { $script:Cfg = Load-Config } catch { Log "Couldn't re-read settings, keeping the old ones: $($_.Exception.Message)" 'WARN' }
     try { Process-Jobs } catch { Log "Polling failed: $($_.Exception.Message)" 'ERROR' }
     try { Rip-Poll } catch { Log "Rip watcher: $($_.Exception.Message)" 'WARN' }
+    try { Torrent-Poll } catch { Log "qBittorrent watcher: $($_.Exception.Message)" 'WARN' }
     try { Live-Poll } catch { Log "Live status: $($_.Exception.Message)" 'WARN' }
     try { Bench-Poll } catch { Log "Benchmark: $($_.Exception.Message)" 'WARN' }
     if ($Once) { break }

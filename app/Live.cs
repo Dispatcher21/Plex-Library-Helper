@@ -104,6 +104,50 @@ namespace PlexLibraryHelper
             else if (File.Exists(Engine.PauseFile)) File.Delete(Engine.PauseFile);
         }
 
+        // ---- qBittorrent (torrent.ps1 does the slowing down; the app only reads, for smooth progress bars)
+        public static string TorrentHold => Path.Combine(Engine.JobsDir, "TORRENTS-HOLD");
+        public static bool TorrentsHeld => File.Exists(TorrentHold);
+        public static void SetTorrentsHeld(bool on)
+        {
+            Directory.CreateDirectory(Engine.JobsDir);
+            if (on) File.WriteAllText(TorrentHold, $"Slowed from the app at {DateTime.Now:o}");
+            else if (File.Exists(TorrentHold)) File.Delete(TorrentHold);
+        }
+        public static int? TorrentPort()
+        {
+            var t = Engine.ReadConfig()?.O("torrent");
+            if (t == null || !t.B("enabled")) return null;
+            return t.D("port") > 0 ? (int)t.D("port") : 8080;
+        }
+        static readonly System.Net.Http.HttpClient Http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        // qBittorrent's own list (null if it isn't running or doesn't answer)
+        public static async System.Threading.Tasks.Task<List<Dictionary<string, object>>> Torrents(int port)
+        {
+            try
+            {
+                var text = await Http.GetStringAsync($"http://127.0.0.1:{port}/api/v2/torrents/info");
+                return (Json.ParseAny(text) as object[])?.OfType<Dictionary<string, object>>().ToList();
+            }
+            catch { return null; }
+        }
+        public static string Rate(double b) => b < 1 ? "0 KB/s" : b < 1048576 ? $"{Math.Max(1, Math.Round(b / 1024))} KB/s" : $"{b / 1048576:0.0} MB/s";
+        public static string TorrentState(string s)
+        {
+            switch (s)
+            {
+                case "downloading": case "forcedDL": return "Downloading";
+                case "metaDL": case "forcedMetaDL": return "Getting details";
+                case "stalledDL": return "Stalled";
+                case "queuedDL": return "Queued";
+                case "checkingDL": case "checkingUP": case "allocating": case "checkingResumeData": return "Checking";
+                case "pausedDL": case "stoppedDL": return "Paused";
+                case "uploading": case "forcedUP": case "stalledUP": case "queuedUP": return "Seeding";
+                case "pausedUP": case "stoppedUP": return "Done";
+                case "error": case "missingFiles": return "Error";
+                default: return s;
+            }
+        }
+
         public static bool BenchmarkWaiting => File.Exists(Engine.BenchRequest);
         public static void RequestBenchmark()
         {

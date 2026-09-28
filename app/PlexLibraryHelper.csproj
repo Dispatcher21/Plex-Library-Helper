@@ -12,7 +12,7 @@
     <RootNamespace>PlexLibraryHelper</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.4.1</Version>
+    <Version>0.4.2</Version>
     <Product>Plex Library Helper</Product>
     <Company>Plex Library Dashboard</Company>
     <Description>Plex Library Helper</Description>
@@ -31,7 +31,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- the engine: extracted next to the exe when it installs -->
-    <EmbeddedResource Include="$(EngineDir)library-helper.ps1;$(EngineDir)compress.ps1;$(EngineDir)encoders.ps1;$(EngineDir)bench.ps1;$(EngineDir)rips.ps1;$(EngineDir)live.ps1;$(EngineDir)api.ps1;$(EngineDir)install-helper.ps1;$(EngineDir)uninstall-helper.ps1;$(EngineDir)README.md">
+    <EmbeddedResource Include="$(EngineDir)library-helper.ps1;$(EngineDir)compress.ps1;$(EngineDir)encoders.ps1;$(EngineDir)bench.ps1;$(EngineDir)pause.ps1;$(EngineDir)torrent.ps1;$(EngineDir)rips.ps1;$(EngineDir)live.ps1;$(EngineDir)api.ps1;$(EngineDir)install-helper.ps1;$(EngineDir)uninstall-helper.ps1;$(EngineDir)README.md">
       <LogicalName>engine/%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
     <Resource Include="app.ico" />

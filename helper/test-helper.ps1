@@ -452,6 +452,13 @@ $JobsDir = Join-Path $root 'live-jobs'
     Check 'trash: refuses anything that is not a dated _TO_DELETE folder' ($threw -and (Test-Path "$keep\precious.mkv"))
     cmd /c "rmdir `"$trash\2020-02-02\Movies\Link`"" | Out-Null
 
+    # 26. The exe carries every engine file the helper loads (a missing one = a helper that can't start)
+    $proj = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\app\PlexLibraryHelper.csproj'))
+    $build = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\make-helper-download.ps1'))
+    $loaded = @(Get-ChildItem $PSScriptRoot -Filter '*.ps1' | Where-Object { $_.Name -notin 'test-helper.ps1', 'tray.ps1' } | Select-String -Pattern "Join-Path \`$(Root|PSScriptRoot) '([\w-]+\.ps1)'" -AllMatches | ForEach-Object { $_.Matches | ForEach-Object { $_.Groups[2].Value } } | Where-Object { $_ -ne 'tray.ps1' } | Sort-Object -Unique)
+    $missing = @($loaded | Where-Object { -not $proj.Contains("`$(EngineDir)$_") -or -not $build.Contains("'$_'") })
+    Check "exe and download carry every engine file ($($loaded.Count))$(if ($missing) { ': missing ' + ($missing -join ', ') })" (-not $missing.Count -and $loaded.Count -ge 8)
+
     Check 'daytime window' ((In-Window '09:00-17:00' ([datetime]'2026-01-01 10:00')) -and -not (In-Window '09:00-17:00' ([datetime]'2026-01-01 18:00')))
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

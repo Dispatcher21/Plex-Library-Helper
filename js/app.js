@@ -534,11 +534,38 @@ function renderRip() {
   el.hidden = false;
 }
 
+// ---------- qBittorrent (torrent.ps1 on the PC that runs it) ----------
+
+// Download/upload speed: KB/s below 1 MB/s, else MB/s with one decimal
+const fmtRate = (b) => (!b ? '0 KB/s' : b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB/s` : `${(b / 1024 / 1024).toFixed(1)} MB/s`);
+
+// A card per PC while something is downloading or it's slowed down; seeding alone isn't worth a card
+function renderTorrents() {
+  const el = $('torcard');
+  const list = rips.torrents().filter((t) => t.running && (t.downloading || t.slowed || t.held || t.problem));
+  if (!list.length) { el.hidden = true; return; }
+  el.innerHTML = list.map((t) => {
+    if (t.problem) return `<div class="rhead"><span class="pill queued">qBittorrent</span><b>${esc(t.pc)}</b></div><div class="fine">${esc(t.problem)}</div>`;
+    const rows = (t.torrents || []).filter((x) => x.progress < 100).slice(0, 5).map((x) => `<div class="tor">
+        <div class="trow"><span class="tname">${esc(x.name)}</span><span class="fine">${x.progress.toFixed(x.progress < 10 ? 1 : 0)}%</span></div>
+        <div class="bar"><i style="width:${Math.max(2, Math.min(100, x.progress))}%"></i></div>
+        <div class="fine">${esc(x.state)} · ${fmtSize(x.size)}${x.dl ? ` · ${fmtRate(x.dl)}` : ''}${x.eta ? ` · about ${cz.fmtDuration(x.eta)} left` : ''}</div></div>`).join('');
+    const slow = t.slowed ? `<span class="pill queued">Slowed down</span>` : `<span class="pill run">Downloading</span>`;
+    const why = t.held ? 'slowed down from the dashboard or tray' : t.slowed && t.byHelper ? `slowed down: ${esc(t.why)}` : t.slowed ? 'speed limit switched on in qBittorrent' : '';
+    const btn = t.held ? `<button class="btn small" data-torhold="${esc(t.pc)}" data-on="0">Back to normal</button>`
+      : `<button class="btn small ghost" data-torhold="${esc(t.pc)}" data-on="1">Slow down now</button>`;
+    return `<div class="rhead">${slow}<b>qBittorrent</b><span class="fine">${esc(t.pc)} · ↓ ${fmtRate(t.dl)} · ↑ ${fmtRate(t.up)} · ${t.downloading} downloading, ${t.seeding} seeding</span></div>
+      ${why ? `<div class="fine">${why}</div>` : ''}${rows}<div class="actions">${btn}</div>`;
+  }).join('<hr class="torsep">');
+  el.hidden = false;
+}
+
 // ---------- Helpers on the live channel: pause switch and _TO_DELETE ----------
 
 // Called whenever something arrives on the channel
 function liveChanged() {
   renderRip();
+  renderTorrents();
   if (!$('library').hidden) renderStats();
   if ($('jobs').open) renderJobs();
   if ($('confirm').open && pendingTrash) renderTrashConfirm();
@@ -1258,6 +1285,12 @@ function bind() {
     renderTrashConfirm();
   };
   $('stats').onclick = (ev) => { if (ev.target.closest('[data-openjobs]')) { renderJobs(); $('jobs').showModal(); } };
+  $('torcard').onclick = async (ev) => {
+    const b = ev.target.closest('[data-torhold]'); if (!b) return;
+    b.disabled = true; b.textContent = 'Sending…';
+    const cmd = { cmd: 'torrents', pc: b.dataset.torhold, hold: b.dataset.on === '1' };
+    try { if (state.demo) { rips.demoCommand(cmd); renderTorrents(); } else await rips.command(cmd); } catch (err) { alert(err.message); renderTorrents(); }
+  };
   $('ripcard').onchange = async (ev) => {
     const cb = ev.target.closest('[data-ripauto]'); if (!cb) return;
     cb.disabled = true;

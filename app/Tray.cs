@@ -16,7 +16,7 @@ namespace PlexLibraryHelper
     {
         readonly Forms.NotifyIcon _icon;
         readonly Icon _idle = Draw("#E5A00D"), _busy = Draw("#5FD4B0"), _paused = Draw("#9AA0A6"), _off = Draw("#FF8A80");
-        readonly Forms.ToolStripMenuItem _status, _pause, _bench, _restart, _update;
+        readonly Forms.ToolStripMenuItem _status, _pause, _bench, _restart, _update, _torrents;
         readonly DispatcherTimer _timer;
         DateTime? _downSince, _lastAutoStart;
         Dictionary<string, JobView> _lastJobs = new Dictionary<string, JobView>();
@@ -29,6 +29,7 @@ namespace PlexLibraryHelper
             var open = new Forms.ToolStripMenuItem("Open Plex Library Helper", null, (s, e) => App.ShowMain()) { Font = new Font(Forms.Control.DefaultFont, FontStyle.Bold) };
             _pause = new Forms.ToolStripMenuItem("Pause all compressions", null, (s, e) => { Live.SetPaused(!Live.Paused); Update(); });
             _bench = new Forms.ToolStripMenuItem("Run benchmark", null, (s, e) => ToggleBenchmark());
+            _torrents = new Forms.ToolStripMenuItem("Slow torrents down", null, (s, e) => { Live.SetTorrentsHeld(!Live.TorrentsHeld); Update(); }) { Visible = false };
             _restart = new Forms.ToolStripMenuItem("Restart helper", null, (s, e) => Restart("Helper restarted"));
             _update = new Forms.ToolStripMenuItem("Install update", null, async (s, e) => { var err = await Updater.Install(); if (err != null) Say("Update", err); }) { Visible = false, Font = new Font(Forms.Control.DefaultFont, FontStyle.Bold) };
             Updater.Changed += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
@@ -40,7 +41,7 @@ namespace PlexLibraryHelper
             {
                 _status, _update, new Forms.ToolStripSeparator(), open,
                 new Forms.ToolStripMenuItem("Open dashboard", null, (s, e) => App.Open(Engine.Dashboard)),
-                _pause, _bench, new Forms.ToolStripSeparator(),
+                _pause, _bench, _torrents, new Forms.ToolStripSeparator(),
                 new Forms.ToolStripMenuItem("Empty _TO_DELETE…", null, (s, e) => App.ShowMain("trash")),
                 new Forms.ToolStripMenuItem("Settings", null, (s, e) => App.ShowMain("settings")),
                 new Forms.ToolStripMenuItem("Open log folder", null, (s, e) => App.Open(Engine.LogDir)),
@@ -85,6 +86,8 @@ namespace PlexLibraryHelper
             var cfg = s != null && s.B("compress");
             _pause.Visible = _bench.Visible = cfg;
             _bench.Text = benching ? "Stop benchmark" : Live.BenchmarkWaiting ? "Cancel benchmark (waiting)" : "Run benchmark";
+            _torrents.Visible = Live.TorrentPort() != null;
+            _torrents.Text = Live.TorrentsHeld ? "Torrents back to normal speed" : "Slow torrents down";
 
             // "done" balloons: a job that was running a moment ago and isn't any more
             foreach (var gone in _lastJobs.Values.Where(j => jobs.All(x => x.Id != j.Id)))

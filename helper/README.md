@@ -129,6 +129,8 @@ and has **Copy topic** if you need it again.
 | `compress.ps1` | Does one compression, estimate or benchmark (started by the helper) |
 | `encoders.ps1` | The encoders it knows (AMD, NVIDIA, Intel graphics; x265, SVT-AV1 on the processor) and how it picks one |
 | `bench.ps1` | The benchmark: which films, when it runs, saving the results, telling the dashboard |
+| `pause.ps1` | The pause rules (Plex, games, idle, overnight), shared by compressions and qBittorrent |
+| `torrent.ps1` | The qBittorrent watcher: downloads on the dashboard, slowing down, finished notifications |
 | `install-helper.ps1` / `uninstall-helper.ps1` | Add it to / remove it from Windows startup |
 | `config.json` | Created by setup: your server and Plex sign-in (encrypted for your Windows user), compression settings |
 | `logs\helper-YYYYMMDD.log` | Everything it did, one file per day |
@@ -179,6 +181,24 @@ inside `_TO_DELETE`, skips anything containing a link to another folder, and rec
 for a request less than 10 minutes old that it hasn't carried out before, and your phone gets a note of
 what was freed. A PC appears there once its helper is connected to the dashboard's ntfy topic: setup
 asks (on a PC without its own notifications, paste the topic from your main PC).
+
+## qBittorrent
+
+On a PC with qBittorrent, setup has a **qBittorrent** step. The helper then shows your downloads (name, %,
+speed, time left) in the app and on the dashboard, and **slows qBittorrent down** while the same rules as
+compressions apply (Plex transcoding, anything playing on Plex, a full-screen game, "only when idle",
+"only overnight"; you pick). Slowing down switches on qBittorrent's own *alternative speed limits* (the turtle),
+so torrents keep going slowly and keep seeding; it switches back 30 seconds after the rule clears. Setup can set
+the turtle's download and upload speeds.
+
+- It talks to qBittorrent's **Web UI**. Setup can switch that on for **this PC only** (127.0.0.1, port 8080, no
+  password from this PC; nothing opens to your network). Close qBittorrent first; a copy of its old settings is
+  kept as `qBittorrent.ini.before-plex-library-helper`.
+- It only watches and switches the turtle: it never adds, removes or looks for torrents.
+- It turns the turtle off only if it turned it on. If you switch it off yourself while a rule applies, it
+  leaves it off until that rule clears.
+- **Slow down now / Back to normal** in the app, the tray and the dashboard's qBittorrent card.
+- Optional phone notification when a download finishes.
 
 ## Putting something back
 

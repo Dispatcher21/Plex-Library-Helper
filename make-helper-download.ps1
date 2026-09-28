@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $src = Join-Path $repo 'helper'
-$engine = 'library-helper.ps1', 'compress.ps1', 'encoders.ps1', 'bench.ps1', 'rips.ps1', 'live.ps1', 'api.ps1', 'install-helper.ps1', 'uninstall-helper.ps1', 'README.md'
+$engine = 'library-helper.ps1', 'compress.ps1', 'encoders.ps1', 'bench.ps1', 'pause.ps1', 'torrent.ps1', 'rips.ps1', 'live.ps1', 'api.ps1', 'install-helper.ps1', 'uninstall-helper.ps1', 'README.md'
 
 $dotnet = @((Get-Command dotnet -ErrorAction SilentlyContinue).Source, "$env:ProgramFiles\dotnet\dotnet.exe", "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe") |
     Where-Object { $_ -and (Test-Path $_) -and (& $_ --list-sdks) } | Select-Object -First 1

@@ -17,8 +17,8 @@ namespace PlexLibraryHelper
     // Every change goes through the engine's API (helper/api.ps1).
     public partial class SetupWindow : Window
     {
-        enum Step { Welcome, Plex, Compress, Phone, Rips, Finish }
-        static readonly string[] Names = { "Welcome", "Plex sign-in", "Compression", "Phone & dashboard", "MakeMKV rips", "Finish" };
+        enum Step { Welcome, Plex, Compress, Phone, Rips, Torrents, Finish }
+        static readonly string[] Names = { "Welcome", "Plex sign-in", "Compression", "Phone & dashboard", "MakeMKV rips", "qBittorrent", "Finish" };
 
         Dictionary<string, object> _info;
         Step _step;
@@ -72,8 +72,10 @@ namespace PlexLibraryHelper
         // ---------------------------------------------------------------- navigation
 
         bool HasRips => _info != null && _info.B("makemkv");
-        Step Prev(Step s) { var p = s - 1; if (p == Step.Rips && !HasRips) p--; return p < 0 ? 0 : p; }
-        Step Following(Step s) { var n = s + 1; if (n == Step.Rips && !HasRips) n++; return n; }
+        bool HasTorrents => _info != null && _info.B("qbittorrent");
+        bool Skip(Step s) => s == Step.Rips && !HasRips || s == Step.Torrents && !HasTorrents;
+        Step Prev(Step s) { var p = s - 1; while (p > 0 && Skip(p)) p--; return p < 0 ? 0 : p; }
+        Step Following(Step s) { var n = s + 1; while (n < Step.Finish && Skip(n)) n++; return n; }
 
         public void GoStep(int s) => Go((Step)s);
         public bool Ready => _info != null;
@@ -93,6 +95,7 @@ namespace PlexLibraryHelper
                 case Step.Compress: Compress(); break;
                 case Step.Phone: Phone(); break;
                 case Step.Rips: Rips(); break;
+                case Step.Torrents: Torrents(); break;
                 case Step.Finish: Finish(); break;
             }
             Scroll.ScrollToTop();
@@ -103,7 +106,7 @@ namespace PlexLibraryHelper
             StepList.Children.Clear();
             for (int i = 0; i < Names.Length; i++)
             {
-                if ((Step)i == Step.Rips && !HasRips) continue;
+                if (Skip((Step)i)) continue;
                 bool done = i < (int)_step, now = i == (int)_step;
                 var circle = new Grid { Width = 24, Height = 24, Margin = new Thickness(0, 0, 12, 0) };
                 circle.Children.Add(new Ellipse { Fill = now ? Ui.Br("Accent") : done ? Ui.Br("AccentSoft") : Ui.Br("Raised"), Stroke = done || now ? Ui.Br("Accent") : Ui.Br("LineStrong"), StrokeThickness = 1 });
@@ -139,6 +142,7 @@ namespace PlexLibraryHelper
                     case Step.Compress: if (!await SaveCompress()) return; break;
                     case Step.Phone: if (!await SaveNotify(false)) return; break;
                     case Step.Rips: if (!await SaveRips()) return; break;
+                    case Step.Torrents: if (!await SaveTorrents()) return; break;
                     case Step.Finish: Close(); return;
                 }
                 Go(Following(_step));
@@ -486,7 +490,104 @@ namespace PlexLibraryHelper
             return true;
         }
 
-        // ---------------------------------------------------------------- 6 finish: start with Windows
+        // ---------------------------------------------------------------- 6 qBittorrent
+
+        Dictionary<string, object> _qbt;
+        bool? _torOn, _torNotify;
+        Dictionary<string, bool> _torRules;
+        string _altDown, _altUp;
+
+        void Torrents()
+        {
+            var page = Header("qBittorrent", "The helper can show your qBittorrent downloads on the dashboard and here, and slow qBittorrent down while the same rules as compressions apply (for example while Plex is transcoding a stream). Slowing down switches on qBittorrent's own alternative speed limits (the turtle), so torrents keep going slowly and keep seeding. It never adds, removes or looks for torrents.");
+            var body = new ContentControl { Content = Ui.V(Ui.T("Checking qBittorrent…", "Fine"), Ui.Bar(0, true)) };
+            page.Children.Add(body);
+            Page.Content = page;
+            Dispatcher.BeginInvoke(new Action(async () => { await LoadQbt(); DrawTorrents(body); }));
+        }
+
+        async Task LoadQbt()
+        {
+            var r = await Engine.Call("qbtinfo");
+            _qbt = r.Ok ? r.Data : new Dictionary<string, object> { ["error"] = r.Error };
+            if (_torOn == null) _torOn = _qbt.B("enabled") || !_qbt.Has("rules");
+            if (_torNotify == null) _torNotify = !_qbt.Has("notify") || _qbt.B("notify");
+            if (_torRules == null) { var rr = _qbt.O("rules"); _torRules = new Dictionary<string, bool> { ["plex"] = rr?.B("plex") ?? true, ["plexall"] = rr?.B("plexall") ?? false, ["game"] = rr?.B("game") ?? true, ["idle"] = rr?.B("idle") ?? false, ["night"] = rr?.B("night") ?? false }; }
+            var alt = _qbt.O("alt");
+            if (alt != null && _altDown == null) { _altDown = ((long)alt.D("down") / 1024).ToString(); _altUp = ((long)alt.D("up") / 1024).ToString(); }
+        }
+
+        void DrawTorrents(ContentControl body)
+        {
+            var v = Ui.V();
+            var details = Ui.V(); details.Visibility = _torOn == true ? Visibility.Visible : Visibility.Collapsed;
+            v.Children.Add(Ui.Switch("Show qBittorrent downloads and slow them down when needed", "Off: the helper leaves qBittorrent alone.", _torOn == true, on => { _torOn = on; details.Visibility = on ? Visibility.Visible : Visibility.Collapsed; }));
+
+            // connection
+            var web = _qbt.O("webui");
+            var check = Ui.Btn("Check again", async () => { body.Content = Ui.V(Ui.T("Checking qBittorrent…", "Fine"), Ui.Bar(0, true)); await LoadQbt(); DrawTorrents(body); }, "Small");
+            UIElement conn;
+            if (_qbt.B("reachable"))
+                conn = Ui.V(Ui.Status("ok", $"Connected to qBittorrent {_qbt.S("version")} (this PC only, no password needed from this PC)"));
+            else if (web != null && web.B("enabled") && web.B("localNoPassword"))
+                conn = Ui.V(Ui.Status(_qbt.B("running") ? "warn" : "off", _qbt.B("running") ? "qBittorrent is running but its Web UI doesn't answer yet. Restart qBittorrent, then check again." : "Web UI is set up. Start qBittorrent, then check again."), Ui.H(check).M(0, 10, 0, 0));
+            else
+            {
+                Button on = null;
+                on = Ui.Btn("Switch it on for this PC only", async () =>
+                {
+                    on.IsEnabled = false; Busy("Changing qBittorrent's settings…");
+                    var r = await Engine.Call("qbtwebui", new { port = 8080 });
+                    Idle(); on.IsEnabled = true;
+                    if (!r.Ok) { Error(r.Error); return; }
+                    await LoadQbt(); DrawTorrents(body); SetFoot("Done. Start qBittorrent again, then Check again.");
+                }, "Primary");
+                conn = Ui.V(Ui.Status("warn", "qBittorrent's Web UI is off"),
+                    Ui.T("The helper talks to qBittorrent through its Web UI. Setup can switch it on for this PC only (127.0.0.1, port 8080, no password from this PC; nothing opens to your network). Close qBittorrent first (File > Exit): it rewrites its settings when it closes. A copy of its old settings is kept.", "Fine").M(0, 6, 0, 10),
+                    Ui.H(on, check.M(8, 0, 0, 0)));
+            }
+            details.Children.Add(Ui.Card(Ui.T("CONNECTION", "Label"), conn));
+
+            // rules
+            var labels = new[] { ("plex", "Slow down while Plex is transcoding a stream"), ("plexall", "Slow down whenever anything is playing on Plex, even direct play"), ("game", "Slow down while a game or full-screen video is running"), ("idle", "Full speed only while nobody is using the PC (after 10 minutes idle)"), ("night", "Full speed only overnight (11 PM to 7 AM)") };
+            var rules = Ui.V();
+            foreach (var (id, text) in labels)
+            {
+                var cb = new CheckBox { IsChecked = _torRules[id], Margin = new Thickness(0, 0, 0, 10), Content = Ui.T(text, fg: Ui.Br("Fg")) };
+                cb.Checked += (s, e) => _torRules[id] = true; cb.Unchecked += (s, e) => _torRules[id] = false;
+                rules.Children.Add(cb);
+            }
+            details.Children.Add(Ui.Card(Ui.T("WHEN TO SLOW DOWN (THE SAME CHOICES AS COMPRESSIONS)", "Label"), rules));
+
+            // the turtle's limits
+            if (_qbt.B("reachable"))
+            {
+                var down = new TextBox { Text = _altDown ?? "", Width = 90 }; down.TextChanged += (s, e) => _altDown = down.Text.Trim();
+                var up = new TextBox { Text = _altUp ?? "", Width = 90 }; up.TextChanged += (s, e) => _altUp = up.Text.Trim();
+                details.Children.Add(Ui.Card(Ui.T("SPEED WHILE SLOWED", "Label"),
+                    Ui.Wrap(Ui.T("Download", "Body", fg: Ui.Br("Fg")).M(0, 8, 8, 0), down, Ui.T("KB/s", "Fine").M(6, 9, 24, 0), Ui.T("Upload", "Body", fg: Ui.Br("Fg")).M(0, 8, 8, 0), up, Ui.T("KB/s", "Fine").M(6, 9, 0, 0)),
+                    Ui.T("qBittorrent's alternative speed limits (0 = no limit). Upload is what remote Plex streams compete with.", "Fine").M(0, 8, 0, 0)));
+            }
+            details.Children.Add(Ui.Card(Ui.Switch("Phone notification when a download finishes", "Through the same ntfy topic as compressions.", _torNotify == true, on => _torNotify = on).M(0, 0, 0, 0)));
+            v.Children.Add(details);
+            body.Content = v;
+        }
+
+        async Task<bool> SaveTorrents()
+        {
+            if (_qbt == null) return true;
+            long d = 0, u = 0;
+            bool limits = _qbt.B("reachable") && long.TryParse(_altDown, out d) && long.TryParse(_altUp, out u);
+            Busy("Saving…");
+            var r = await Engine.Call("savetorrent", limits
+                ? (object)new { enabled = _torOn == true, notify = _torNotify == true, rules = _torRules, altDown = d, altUp = u }
+                : new { enabled = _torOn == true, notify = _torNotify == true, rules = _torRules });
+            Idle();
+            if (!r.Ok) { Error(r.Error); return false; }
+            return true;
+        }
+
+        // ---------------------------------------------------------------- 7 finish: start with Windows
 
         void Finish()
         {

@@ -243,3 +243,10 @@ details.dupeps h4 { display: flex; gap: 8px; align-items: center; flex-wrap: wra
 .spin { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+/* qBittorrent card (same frame as the rip card) */
+.torcard { border-left-color: var(--hd); }
+.torcard .tor { margin-top: 8px; }
+.torcard .trow { display: flex; justify-content: space-between; gap: 10px; }
+.torcard .tname { overflow-wrap: anywhere; font-weight: 500; }
+.torcard .bar { margin: 4px 0 2px; }
+.torsep { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }

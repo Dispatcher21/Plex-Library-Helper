@@ -41,8 +41,9 @@ namespace PlexLibraryHelper
                 main.Close();
                 var setup = new SetupWindow(0);
                 setup.Show();
-                while (!setup.Ready) await Task.Delay(500);
-                for (int s = 0; s <= 4; s++)
+                for (int i = 0; i < 120 && !setup.Ready; i++) await Task.Delay(500);
+                if (!setup.Ready) throw new Exception("setup never finished loading");
+                for (int s = 0; s <= 5; s++)
                 {
                     setup.GoStep(s);
                     await Task.Delay(s == 2 ? 14000 : 2000);

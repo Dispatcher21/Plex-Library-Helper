@@ -32,17 +32,19 @@ export function status() { return latest; }
 // Everything else on the channel, newest per PC: what each helper is doing (kind 'helper'), what's waiting
 // in its _TO_DELETE ('trash'), what it can compress with and its benchmark results ('caps'), and answers to
 // 'empty' requests ('trashResult', by request id)
-const byPc = { helper: {}, trash: {}, caps: {} }; const results = {};
+const byPc = { helper: {}, trash: {}, caps: {}, torrents: {} }; const results = {};
 export function helpers() { return Object.values(byPc.helper).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function trashes() { return Object.values(byPc.trash).filter((t) => t.batches?.length).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function result(req) { return results[req] || null; }
+// qBittorrent on each PC (kind 'torrents'): newest report per PC, only recent ones
+export function torrents() { return Object.values(byPc.torrents).filter((t) => Date.now() - new Date(t.time).getTime() < 20 * 60000).sort((a, b) => a.pc.localeCompare(b.pc)); }
 export function caps(pc) { return pc ? byPc.caps[pc] || null : Object.values(byPc.caps).filter((c) => c.compress).sort((a, b) => a.pc.localeCompare(b.pc)); }
 
 function take(msg) {
   if (msg?.event !== 'message') return;
   let s; try { s = JSON.parse(msg.message); } catch { return; }
   if (s?.kind === 'rip') { latest = { ...s, received: Date.now() }; onChange(latest); }
-  else if (s?.kind === 'helper' || s?.kind === 'trash' || s?.kind === 'caps') {
+  else if (s?.kind === 'helper' || s?.kind === 'trash' || s?.kind === 'caps' || s?.kind === 'torrents') {
     const old = byPc[s.kind][s.pc];
     if (!old || new Date(s.time) >= new Date(old.time)) { byPc[s.kind][s.pc] = s; onChange(latest); }
   } else if (s?.kind === 'trashResult') { results[s.req] = s; onChange(latest); }
@@ -66,10 +68,15 @@ export function demoHelpers() {
       x265slow: { '4k': { fps: 1.1, q: [16.8, 18.9, 20.7, 24.1], kbps: [16000, 11800, 9000, 5600], src: 62000, time: now } }, svtav1: { '4k': { fps: 0.9, q: [24, 28, 31, 37], kbps: [12500, 9000, 7100, 4300], src: 62000, time: now } } }, bench: null };
   byPc.caps['MEDIA-PC'] = { kind: 'caps', pc: 'MEDIA-PC', version: '0.3.9', time: now, compress: true, cpu: 'Intel(R) N100', threads: 4, gpus: ['Intel(R) UHD Graphics'], encoders: ['qsv', 'x265', 'x265slow'], allowCpu: false, levels: lv,
     calibration: { qsv: { '4k': { fps: 14, q: [19.5, 21.8, 24, 28.5], kbps: [29000, 21000, 15500, 9800], src: 62000, time: now } } }, bench: { state: 'running', percent: 40, what: 'Benchmark 1080 - Intel graphics (Quick Sync, HEVC), setting 22: encoding' } };
+  byPc.torrents['GAMING-PC'] = { kind: 'torrents', pc: 'GAMING-PC', time: now, running: true, slowed: true, why: 'Plex is transcoding a stream', byHelper: true, held: false, dl: 1_400_000, up: 60_000, downloading: 2, seeding: 5, total: 9,
+    torrents: [{ name: 'Big.Buck.Bunny.2008.2160p.UHD', hash: 'a1', progress: 42.5, state: 'Downloading', dl: 1_200_000, up: 40_000, size: 12e9, eta: 4100, ratio: 0.1 },
+      { name: 'Sintel.2010.1080p', hash: 'b2', progress: 88, state: 'Stalled', dl: 0, up: 0, size: 3e9, eta: null, ratio: 0.4 },
+      { name: 'Tears.of.Steel.2012.4K', hash: 'c3', progress: 100, state: 'Seeding', dl: 0, up: 20_000, size: 5e9, eta: null, ratio: 1.7 }] };
   byPc.trash['MEDIA-PC'] = { kind: 'trash', pc: 'MEDIA-PC', time: now, total: 251 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-26', drive: 'E:', date: '2026-09-26', bytes: 251 * GB, files: 5, titles: ['Pirates of the Caribbean: The Curse of the Black Pearl (2003)', 'Pirates of the Caribbean: Dead Man\'s Chest (2006)', 'Pirates of the Caribbean: At World\'s End (2007)', 'Pirates of the Caribbean: On Stranger Tides (2011)', 'Pirates of the Caribbean: Dead Men Tell No Tales (2017)'], more: 0 }] };
   byPc.trash['GAMING-PC'] = { kind: 'trash', pc: 'GAMING-PC', time: now, total: 250 * GB, batches: [{ path: 'E:\\_TO_DELETE\\2026-09-12', drive: 'E:', date: '2026-09-12', bytes: 86 * GB, files: 2, titles: ['Harry Potter and the Sorcerer\'s Stone (2001)'], more: 0 }, { path: 'G:\\_TO_DELETE\\2026-09-27', drive: 'G:', date: '2026-09-27', bytes: 164 * GB, files: 2, titles: ['Transformers (2007)', 'Transformers: Age of Extinction (2014)'], more: 0 }] };
 }
 export function demoCommand(obj) {
+  if (obj.cmd === 'torrents') { const t = byPc.torrents[obj.pc]; if (t) byPc.torrents[obj.pc] = { ...t, held: obj.hold, slowed: obj.hold || t.why !== '', why: obj.hold ? 'paused from the tray or dashboard' : 'Plex is transcoding a stream' }; }
   if (obj.cmd === 'benchmark') { const c = byPc.caps[obj.pc]; if (c) byPc.caps[obj.pc] = { ...c, bench: obj.stop ? null : { state: 'waiting' } }; }
   if (obj.cmd === 'pause') { const h = byPc.helper[obj.pc]; if (h) byPc.helper[obj.pc] = { ...h, paused: obj.on, jobs: h.jobs.map((j) => ({ ...j, what: obj.on ? 'paused: paused from the tray or dashboard' : 'Encoding' })) }; }
   if (obj.cmd === 'emptytrash') setTimeout(() => {

@@ -4,8 +4,9 @@
 
   The dashboard and this helper talk through the private ntfy topic:
     <topic>-status  helper -> dashboard   {"kind":"helper"|"trash"|"trashResult"|"rip", "pc":..., ...}
-    <topic>-status  also {"kind":"caps"}: what this PC can compress with and its benchmark results (bench.ps1)
-    <topic>-cmd     dashboard -> helper   {"cmd":"pause"|"emptytrash"|"autocompress"|"benchmark", "pc":..., ...}
+    <topic>-status  also {"kind":"caps"}: what this PC can compress with and its benchmark results (bench.ps1),
+                                          {"kind":"torrents"}: qBittorrent downloads and the speed limit (torrent.ps1)
+    <topic>-cmd     dashboard -> helper   {"cmd":"pause"|"emptytrash"|"autocompress"|"benchmark"|"torrents", "pc":..., ...}
   Every PC's helper reads the same command topic and only acts on commands naming it.
 
   Pausing: the file jobs\PAUSED. While it exists no compression or estimate starts, and a running one is
@@ -66,6 +67,11 @@ function Read-Commands {
 function Handle-Command($c, [datetime]$sent, [string]$msgId) {
     switch ([string]$c.cmd) {
         'autocompress' { Handle-RipCommand $c }
+        'torrents' {
+            if ($c.pc -ne $env:COMPUTERNAME) { return }
+            if ($sent -lt $script:LiveStarted.AddSeconds(-60)) { return }   # from before this helper started
+            Set-TorrentHold ([bool]$c.hold) 'the dashboard'
+        }
         'benchmark' {
             if ($c.pc -ne $env:COMPUTERNAME) { return }
             if ((Done-Requests) -contains $msgId) { return }
@@ -135,6 +141,7 @@ function Live-Poll {
     # the tray reads this file every few seconds
     $state = [ordered]@{ pid = $PID; root = $Root; version = $Version; time = (Get-Date).ToString('o'); paused = $h.paused; compress = $h.compress; jobs = $h.jobs
         rip = $(if ($script:RipLastStatus -and $script:RipLastStatus.state -eq 'ripping') { $script:RipLastStatus } else { $null })
+        torrents = $script:TorrentState
         channel = (Channel-On); dashboard = $DashboardUrl }
     try { ($state | ConvertTo-Json -Depth 6) | Out-File -LiteralPath "$StateFile.tmp" -Encoding UTF8; Move-Item -LiteralPath "$StateFile.tmp" -Destination $StateFile -Force } catch { }
 

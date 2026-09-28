@@ -48,6 +48,7 @@ function Api-Info {
         dashboardLink = $(if ($c -and $c.notify -and $c.notify.topic) { Dashboard-Link })
         task = [ordered]@{ installed = [bool]$task; root = $installed; state = $(if ($task) { [string]$task.State }) }
         oldCopy = $old; oldBusy = $oldBusy
+        qbittorrent = (Qbt-Installed)
         makemkv = [bool](@("${env:ProgramFiles(x86)}\MakeMKV\makemkv.exe", "$env:ProgramFiles\MakeMKV\makemkv.exe") | Where-Object { Test-Path -LiteralPath $_ })
         hardware = [ordered]@{
             cpu = [string](@(Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue)[0].Name).Trim(); threads = [Environment]::ProcessorCount
@@ -197,6 +198,49 @@ function Api-EmptyTrash($a) {
     [ordered]@{ freed = $freed; deleted = $deleted; errors = $errors }
 }
 
+# ---------------------------------------------------------------- qBittorrent
+
+function Api-QbtInfo {
+    $script:Cfg = Api-Config
+    $t = if ($script:Cfg) { $script:Cfg.torrent } else { $null }
+    $web = Qbt-IniWebUi
+    $running = Qbt-Running
+    $reach = $false; $alt = $null; $ver = $null
+    if ($running) {
+        try { $ver = Qbt-Get '/api/v2/app/version'; $reach = $true
+            $p = Qbt-Get '/api/v2/app/preferences' | ConvertFrom-Json
+            $alt = [ordered]@{ down = [long]$p.alt_dl_limit; up = [long]$p.alt_up_limit } } catch { }
+    }
+    [ordered]@{
+        installed = (Qbt-Installed); running = $running; reachable = $reach; version = $ver; webui = $web; alt = $alt
+        enabled = [bool]($t -and $t.enabled); notify = -not ($t -and $t.notify -eq $false)
+        rules = $(if ($t -and $t.rules) { $t.rules } else { [ordered]@{ plex = $true; plexall = $false; game = $true; idle = $false; night = $false } })
+    }
+}
+
+function Api-SaveTorrent($a) {
+    $script:Cfg = Load-Config
+    $web = Qbt-IniWebUi
+    $r = $a.rules
+    $script:Cfg | Add-Member -NotePropertyName torrent -Force -NotePropertyValue ([ordered]@{
+        enabled = [bool]$a.enabled; port = $(if ($a.port) { [int]$a.port } else { $web.port }); notify = [bool]$a.notify
+        rules = [ordered]@{ plex = [bool]$r.plex; plexall = [bool]$r.plexall; game = [bool]$r.game; idle = [bool]$r.idle; night = [bool]$r.night } })
+    Save-Config
+    # the turtle's limits, if given (KiB/s -> bytes/s; 0 = unlimited)
+    $set = $null
+    if ($a.enabled -and $null -ne $a.altDown -and (Qbt-Running)) {
+        try {
+            $prefs = [ordered]@{ alt_dl_limit = [long]$a.altDown * 1024; alt_up_limit = [long]$a.altUp * 1024 } | ConvertTo-Json -Compress
+            Qbt-Post '/api/v2/app/setPreferences' @{ json = $prefs }; $set = $true
+        } catch { $set = $false }
+    }
+    if (-not $a.enabled -and (Test-Path -LiteralPath $TorrentSlowedFile) -and (Qbt-Running)) {
+        try { if ((Qbt-Get '/api/v2/transfer/speedLimitsMode').Trim() -eq '1') { Qbt-Post '/api/v2/transfer/toggleSpeedLimitsMode' }; [IO.File]::Delete($TorrentSlowedFile) } catch { }
+    }
+    Log "qBittorrent watcher $(if ($a.enabled) { "on (rules: $(($r.PSObject.Properties | Where-Object Value | ForEach-Object Name) -join '+'))" } else { 'off' })."
+    [ordered]@{ ok = $true; limitsSet = $set }
+}
+
 function Invoke-Api([string]$name, [string]$json) {
     [Console]::OutputEncoding = [Text.Encoding]::UTF8
     $a = if ($json) { $json | ConvertFrom-Json } else { [pscustomobject]@{} }
@@ -215,6 +259,10 @@ function Invoke-Api([string]$name, [string]$json) {
             'uninstall'    { Api-Uninstall }
             'trash'        { @{ batches = @(Api-Trash) } }
             'emptytrash'   { Api-EmptyTrash $a }
+            'qbtinfo'      { Api-QbtInfo }
+            'qbtwebui'     { Qbt-EnableWebUi $(if ($a.port) { [int]$a.port } else { 8080 }); [ordered]@{ ok = $true; webui = (Qbt-IniWebUi) } }
+            'savetorrent'  { Api-SaveTorrent $a }
+            'torrenthold'  { Set-TorrentHold ([bool]$a.on) 'the app'; [ordered]@{ ok = $true } }
             default        { throw "Unknown command '$name'" }
         }
         Api-Out 'RESULT' $r

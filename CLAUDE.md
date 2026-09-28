@@ -246,6 +246,24 @@ as embedded resources (`engine/*`). Build: `make-helper-download.ps1` (needs the
   Test hooks: `PLH_UPDATE_URL`, `PLH_UPDATE_FIRST` (seconds); a PLH_HOME install has its own single-instance lock.
 - Not yet: code signing (SmartScreen warns on the first manual download: More info > Run anyway).
 
+### qBittorrent (0.4.2, `helper/torrent.ps1`, `helper/pause.ps1`)
+
+Owner's scope: download status and auto-slowing only; **never search/add torrents** (no Radarr-style fetching).
+Owner chose: slow down (qBittorrent's alternative speed limits = turtle, `transfer/toggleSpeedLimitsMode`) not
+pause; the same rule set as compressions, chosen in setup (defaults plex + game); Web UI with localhost auth bypass
+(no stored password). qBittorrent 5.0.4 on LENOVOLEGION, saves to D:\, Web UI was off (setup's
+`Qbt-EnableWebUi` edits `%APPDATA%\qBittorrent\qBittorrent.ini` [Preferences] WebUI\Enabled/Address=127.0.0.1/
+Port/LocalHostAuth=false; only while qBittorrent is closed; backup `.before-plex-library-helper`).
+- `pause.ps1` = the pause rules moved out of compress.ps1 (PldWin, In-Window, Plex-Activity, Pause-Reason with a
+  `$holdFile` parameter: compressions jobs\PAUSED, torrents jobs\TORRENTS-HOLD).
+- `Torrent-Poll` each helper loop: turtle on when a rule applies (remembered in jobs\torrents-slowed.txt), off 30 s
+  after it clears, only if it was ours; user switching it off wins until the rule clears. POSTs need a Referer
+  (qBittorrent CSRF check). PS 5.1 `ConvertFrom-Json` returns an array as one item: unroll with ForEach-Object.
+- Publishes `kind: torrents` (on change / every minute while downloading); state.json `torrents`; dashboard
+  `#torcard`; command `{"cmd":"torrents","pc","hold"}`. The app reads qBittorrent's API itself for 2 s progress.
+- Tests: `helper/tests/test-torrent.ps1` (19, against `fake_qbt.py`, never the real qBittorrent). test-helper.ps1
+  now checks the exe/download carry every engine file (pause.ps1/torrent.ps1 were missed once).
+
 ### Compression gotchas
 
 - **GPU frames dropped** with `-hwaccel_output_format d3d11`: "Static surface pool size exceeded" → ffmpeg
