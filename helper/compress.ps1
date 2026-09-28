@@ -25,11 +25,12 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 # ---------------------------------------------------------------- presets
-# q = constant QP on the GPU (AMD AMF HEVC) or CRF on the CPU (x265). Size/speed figures are what the
-# dashboard shows before an estimate; they come from test encodes on the owner's PC (see CLAUDE.md).
+# The helper picks the encoder and setting for each job (encoders.ps1: Choose-Encoder, from this PC's
+# benchmark) and passes them in the job file. Encoder/Q here are only for jobs from older helpers.
+. (Join-Path $PSScriptRoot 'encoders.ps1')
 
 $Presets = [ordered]@{
-    '4kx'   = @{ Label = '4K Extreme';    Height = 2160; Encoder = 'x265'; Q = 18; KeepsDV = $true }
+    '4kx'   = @{ Label = '4K Extreme';    Height = 2160; Encoder = 'x265slow'; Q = 18; KeepsDV = $true }
     '4kh'   = @{ Label = '4K High';       Height = 2160; Encoder = 'amf';  Q = 20; KeepsDV = $true }
     '4kn'   = @{ Label = '4K Normal';     Height = 2160; Encoder = 'amf';  Q = 22; KeepsDV = $true }
     '4ks'   = @{ Label = '4K Data Saver'; Height = 2160; Encoder = 'amf';  Q = 26; KeepsDV = $true }
@@ -153,41 +154,32 @@ function Color-Args($preset, $src) {
     $a
 }
 
-# Full ffmpeg argument list for the video encode. GPU encodes write raw HEVC (so the Dolby Vision data
-# can be injected afterwards); CPU encodes write video-only MKV (x265 carries Dolby Vision itself).
+# Full ffmpeg argument list for the video encode. Encoders that can't carry Dolby Vision themselves write
+# raw HEVC (so it can be injected afterwards); the others write video-only MKV.
 function Encode-Args($preset, $src, [string]$inPath, [string]$outPath, [string]$progressPath, [double]$seek = -1, [double]$length = -1) {
+    $enc = $Encoders[$preset.Encoder]
+    if (-not $enc) { throw "Unknown encoder '$($preset.Encoder)'." }
     $a = @('-nostdin', '-hide_banner', '-y', '-v', 'error')
     if ($progressPath) { $a += '-progress', (Qt $progressPath) }
     $filters = @(Video-Filters $preset $src)
-    if ($preset.Encoder -eq 'amf') {
-        # GPU decode too: same speed, almost no CPU. Frames stay on the GPU unless CPU filters need them.
-        $a += '-hwaccel', 'd3d11va'
-        # Frames stay on the GPU unless CPU filters need them. The default pool of GPU frames is too small
-        # while the encoder holds some: ffmpeg then drops frames ("Static surface pool size exceeded").
-        if (-not $filters.Count) { $a += '-hwaccel_output_format', 'd3d11', '-extra_hw_frames', '16' }
-    }
+    $a += Decode-Args $enc (-not $filters.Count)
     if ($seek -ge 0) { $a += '-ss', ('{0:0.###}' -f $seek) }
     if ($length -gt 0) { $a += '-t', ('{0:0.###}' -f $length) }
     $a += '-i', (Qt $inPath), '-map', '0:v:0', '-fps_mode', 'passthrough', '-an', '-sn', '-dn'
     if ($filters.Count) { $a += '-vf', (Qt ($filters -join ',')) }
-    if ($preset.Encoder -eq 'amf') {
-        $q = [int]$preset.Q
-        $a += '-c:v', 'hevc_amf', '-profile:v', $(if ($filters.Count -or $src.BitDepth -ge 10) { 'main10' } else { 'main' }), '-quality', 'quality', '-vbaq', '1', '-rc', 'cqp', '-qp_i', $q, '-qp_p', $q, '-qp_b', ($q + 2)
-        if ($filters.Count) { $a += '-pix_fmt', 'p010le' }
-        $a += Color-Args $preset $src
-        if ($outPath -like '*.hevc') { $a += '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc' }
-    } else {
-        $a += '-c:v', 'libx265', '-preset', 'slow', '-crf', $preset.Q, '-pix_fmt', 'yuv420p10le'
+    $tenBit = [bool]$filters.Count -or $src.BitDepth -ge 10 -or $enc.Kind -eq 'cpu'   # CPU encoders: 10-bit always compresses better
+    $a += Codec-Args $enc $preset.Q $tenBit ([bool]$filters.Count)
+    if ($enc.Ffmpeg -eq 'libx265') {
         if ($src.DvProfile -in 7, 8 -and $preset.KeepsDV) { $a += '-dolbyvision', '1' }   # "auto" silently drops it
         $x = 'repeat-headers=1:vbv-maxrate=40000:vbv-bufsize=40000'   # Dolby Vision needs VBV (UHD Blu-ray level cap)
         if ($src.Hdr) { $x = "hdr10-opt=1:$x" }
         $a += '-x265-params', $x
-        $a += Color-Args $preset $src
     }
+    $a += Color-Args $preset $src
+    if ($outPath -like '*.hevc') { $a += '-bsf:v', 'hevc_mp4toannexb', '-f', 'hevc' }
     $a += (Qt $outPath)
     $a
 }
-
 # ---------------------------------------------------------------- pause rules
 
 Add-Type @'
@@ -335,7 +327,8 @@ function Audio-Plan($src, [string]$mode) {
 function Verify-Output([string]$path, $src, $preset, [long]$framesEncoded, [int]$audioTracks, [bool]$expectDv) {
     $o = Get-SourceInfo $path
     $problems = @()
-    if ($o.Codec -ne 'hevc') { $problems += "video is $($o.Codec), expected HEVC" }
+    $want = $Encoders[$preset.Encoder].Codec
+    if ($o.Codec -ne $want) { $problems += "video is $($o.Codec), expected $($want.ToUpper())" }
     $pk = (Invoke-Tool $script:Tools.ffprobe @('-v', 'error', '-select_streams', 'v:0', '-count_packets', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', (Qt $path)) 'Counting frames').Trim()
     $outLen = [long]$pk / $src.Fps
     $tol = if ($src.VideoDurationExact) { [math]::Max(1.0, $src.VideoDuration * 0.001) } else { $src.VideoDuration * 0.03 }
@@ -356,7 +349,7 @@ function Verify-Output([string]$path, $src, $preset, [long]$framesEncoded, [int]
 # ---------------------------------------------------------------- the two modes
 
 function Run-Estimate($job, $src, $preset, [int]$samples = 3) {
-    $len = if ($preset.Encoder -eq 'x265') { 8 } else { 20 }
+    $len = if ($Encoders[$preset.Encoder].Kind -eq 'cpu') { 8 } else { 20 }
     $len = [math]::Min($len, [math]::Max(2.0, $src.Duration / 10))
     $totalBytes = 0L; $totalSec = 0.0; $encSecs = 0.0; $frames = 0L; $vmafs = @()
     for ($i = 0; $i -lt $samples; $i++) {
@@ -426,7 +419,7 @@ function Run-Compress($job, $src, $preset, $target = $null) {
 
     Preflight-Check $src $srcDir
 
-    $useRpu = $preset.Encoder -eq 'amf' -and $preset.KeepsDV -and $src.DvProfile -in 7, 8
+    $useRpu = $Encoders[$preset.Encoder].Rpu -and $preset.KeepsDV -and $src.DvProfile -in 7, 8
     $expectDv = $preset.KeepsDV -and $src.DvProfile -in 7, 8
     $weights = @{ encode = 0.9 }
     $report = { param([string]$phase, [double]$pct, [double]$fps, [string]$why)
@@ -450,7 +443,7 @@ function Run-Compress($job, $src, $preset, $target = $null) {
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $rpu)) { throw "Reading Dolby Vision failed: $($o -join ' ')" }
     }
 
-    $videoOut = Join-Path $script:Work $(if ($preset.Encoder -eq 'amf') { 'video.hevc' } else { 'video.mkv' })
+    $videoOut = Join-Path $script:Work $(if ($Encoders[$preset.Encoder].Rpu) { 'video.hevc' } else { 'video.mkv' })
     $progress = Join-Path $script:Work 'encode.progress'
     $frames = Run-Encode (Encode-Args $preset $src $src.Path $videoOut $progress) $progress $src.Duration $job.rules {
         param($f, $fps, $why) & $report 'Encoding' ($f * 100 * $weights.encode) $fps $why
@@ -478,7 +471,7 @@ function Run-Compress($job, $src, $preset, $target = $null) {
     $muxed = Join-Path $script:Work 'final.mkv'
     $m = @('-q', '-o', (Qt $muxed), '--title', (Qt $title))
     $m += '--language', "0:$($src.Language)"
-    if ($preset.Encoder -eq 'amf') { $m += '--default-duration', "0:$($src.FpsRational)p" }
+    if ($Encoders[$preset.Encoder].Rpu) { $m += '--default-duration', "0:$($src.FpsRational)p" }   # raw stream: needs its frame rate
     else { $m += '--no-audio', '--no-subtitles', '--no-chapters', '--no-attachments' }
     $m += (Qt $videoFinal), '--no-video'
     if ($audio.Copy.Count) { $m += '--audio-tracks', ($audio.Copy -join ',') } else { $m += '--no-audio' }
@@ -609,6 +602,10 @@ Wlog "Worker ${PID}: $($job.mode) '$($job.title)' preset $($job.preset) audio $(
 try {
     $preset = $Presets[$job.preset]
     if (-not $preset) { throw "Unknown preset '$($job.preset)'." }
+    $preset = $preset.Clone()
+    if ($job.encoder) { $preset.Encoder = [string]$job.encoder; $preset.Q = [double]$job.q }   # chosen by the helper for this PC
+    if ($Encoders[$preset.Encoder].Codec -ne 'hevc') { $preset.KeepsDV = $false }   # AV1 output keeps HDR10, not Dolby Vision
+    Wlog "Encoder: $($Encoders[$preset.Encoder].Label), setting $($preset.Q)"
     if ($job.items) {
         Wlog "$(@($job.items).Count) episodes: $((@($job.items) | ForEach-Object { $_.ep }) -join ', ')"
         $result = if ($job.mode -eq 'estimate') { Estimate-Episodes $job $preset } else { Run-Episodes $job $preset }
