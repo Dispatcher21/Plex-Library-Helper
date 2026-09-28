@@ -72,7 +72,7 @@ function Test-Encoders([string]$ffmpeg) {
 # Graphics-card encoders first; 'extreme' prefers the processor's efficient encoder (x265 slow / SVT-AV1)
 # when this PC allows processor encodes. Settings come from the benchmark's calibration when there is one.
 function Choose-Encoder($compressCfg, [string]$level, [string]$tier, [string]$codec) {
-    $avail = @($compressCfg.encoders)
+    $avail = @($compressCfg.encoders | Where-Object { $_ })   # (@($null) would count as one)
     if (-not $avail.Count) { $avail = @('amf', 'x265', 'x265slow') }   # set up before encoders were tested (the owner's AMD PC)
     $allowCpu = $compressCfg.allowCpu -ne $false
     $mine = @($avail | Where-Object { $Encoders[$_] -and $Encoders[$_].Codec -eq $codec })

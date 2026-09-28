@@ -479,8 +479,11 @@ function Enable-Compress {
     $missing = @($tools.Keys | Where-Object { -not $tools[$_] })
     $names = @{ ffmpeg = 'ffmpeg'; ffprobe = 'ffprobe (comes with ffmpeg)'; mkvmerge = 'MKVToolNix'; dovi = 'dovi_tool (tools folder)' }
     if ($missing) { throw "still missing $(($missing | ForEach-Object { $names[$_] }) -join ', '). Run setup again and say yes to installing it." }
-    $enc = & $tools.ffmpeg -hide_banner -encoders 2>$null | Out-String
-    if ($enc -notmatch 'hevc_amf') { throw "This ffmpeg can't use the AMD graphics encoder (hevc_amf)." }
+    # Which encoders work here (graphics card and processor); setup may have found them already
+    $found = if ($script:FoundEncoders) { @($script:FoundEncoders) } else { @(Test-Encoders $tools.ffmpeg) }
+    if (-not $found.Count) { throw "none of the encoders work with this PC's ffmpeg." }
+    $prev0 = $script:Cfg.compress
+    $allowCpu = if ($null -ne $script:AllowCpu) { [bool]$script:AllowCpu } elseif ($prev0 -and $null -ne $prev0.allowCpu) { [bool]$prev0.allowCpu } else { $true }
     if (-not $WorkDir) {
         # the local drive with the most free space
         $d = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Sort-Object FreeSpace -Descending | Select-Object -First 1
@@ -489,11 +492,12 @@ function Enable-Compress {
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
     $prev = $script:Cfg.compress
     $script:Cfg | Add-Member -NotePropertyName compress -Force -NotePropertyValue ([ordered]@{
-        enabled = $true; workDir = $WorkDir; tools = $tools
+        enabled = $true; workDir = $WorkDir; tools = $tools; encoders = $found; allowCpu = $allowCpu
         nightWindow = $(if ($prev -and $prev.nightWindow) { $prev.nightWindow } else { '23:00-07:00' })
+        calibration = $(if ($prev -and $prev.calibration) { $prev.calibration } else { $null })
     })
     Save-Config
-    Log "Compression turned on. Work folder $WorkDir. Tools: $(($tools.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
+    Log "Compression turned on. Encoders: $($found -join ', ') (processor jobs $(if ($allowCpu) { 'allowed' } else { 'not taken' })). Work folder $WorkDir. Tools: $(($tools.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; ')"
 }
 
 # p=4kh;a=keep;r=plex+game  ->  preset, audio and pause rules
@@ -504,6 +508,7 @@ function Parse-CompressOptions([string]$info) {
     [ordered]@{
         preset = [string]$o['p']
         scope  = [string]$o['s']   # shows only: S02 or all
+        codec  = $(if ($o['v'] -eq 'av1') { 'av1' } else { 'hevc' })
         audio  = $(if ($o['a'] -eq 'small') { 'small' } else { 'keep' })
         rules  = [ordered]@{ plex = $r -contains 'plex'; plexall = $r -contains 'plexall'; game = $r -contains 'game'; idle = $r -contains 'idle'; night = $r -contains 'night' }
     }
@@ -655,7 +660,15 @@ function Show-CompressItems($showKey, [string]$scope, [hashtable]$shares) {
     @{ items = $items; already = $already; unreadable = $unreadable }
 }
 
-function Start-ShowCompress($w, $j, [string]$mode, [hashtable]$shares, [string]$jobFile) {
+# The encoder and setting this PC would use for a job's options, or $null if it shouldn't take it
+function Job-Encoder([string]$info) {
+    $opt = Parse-CompressOptions $info
+    $lv = Preset-Level $opt.preset
+    if (-not $lv) { return $null }
+    Choose-Encoder $script:Cfg.compress $lv.level $lv.tier $opt.codec
+}
+
+function Start-ShowCompress($w, $j, [string]$mode, [hashtable]$shares, [string]$jobFile, $choice) {
     $opt = Parse-CompressOptions $j.Info
     $scope = if ($opt.scope) { $opt.scope } else { 'all' }
     $found = Show-CompressItems $w.Item.ratingKey $scope $shares
@@ -665,6 +678,7 @@ function Start-ShowCompress($w, $j, [string]$mode, [hashtable]$shares, [string]$
     }
     $jf = [ordered]@{
         jobId = $j.JobId; mode = $mode; action = $j.Action; mediaId = $j.MediaId; preset = $opt.preset; audio = $opt.audio; rules = $opt.rules
+        encoder = $choice.encoder; q = $choice.q; codec = $opt.codec
         scope = $scope; items = $found.items; skipped = $found.already; unreadable = $found.unreadable
         source = $found.items[0].source; sourcePlex = $found.items[0].sourcePlex; section = $w.Section; ratingKey = [string]$w.Item.ratingKey
         title = $w.Item.title; year = $w.Item.year
@@ -699,7 +713,10 @@ function Process-CompressJob($w, [hashtable]$shares) {
         if (Test-Path -LiteralPath $jobFile) { return }                 # already claimed; label update pending
         if (@(Running-Workers $mode).Count) { return }                 # one compress and one estimate at a time
         if (Is-Paused) { return }                                      # paused from the tray or dashboard: wait
-        if ($w.IsShow) { Start-ShowCompress $w $j $mode $shares $jobFile; return }
+        # Can this PC do it (right encoder, processor jobs allowed)? If not, another PC will
+        $choice = Job-Encoder $j.Info
+        if (-not $choice) { return }
+        if ($w.IsShow) { Start-ShowCompress $w $j $mode $shares $jobFile $choice; return }
         $media = @($w.Item.Media) | Where-Object { [string]$_.id -eq $j.MediaId } | Select-Object -First 1
         if (-not $media) { Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'fail' 'Plex no longer lists this copy'); return }
         $part = @($media.Part)[0]
@@ -711,6 +728,7 @@ function Process-CompressJob($w, [hashtable]$shares) {
         $opt = Parse-CompressOptions $j.Info
         $jf = [ordered]@{
             jobId = $j.JobId; mode = $mode; action = $j.Action; mediaId = $j.MediaId; preset = $opt.preset; audio = $opt.audio; rules = $opt.rules
+            encoder = $choice.encoder; q = $choice.q; codec = $opt.codec
             source = $src; sourcePlex = $part.file; section = $w.Section; ratingKey = [string]$w.Item.ratingKey
             title = $w.Item.title; year = $w.Item.year
             workDir = $script:Cfg.compress.workDir; tools = $script:Cfg.compress.tools; nightWindow = $script:Cfg.compress.nightWindow
@@ -746,12 +764,12 @@ function Process-CompressJob($w, [hashtable]$shares) {
     if ($st -and $st.state -eq 'done') {
         $r = $st.result
         if ($mode -eq 'estimate') {
-            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes; c = $r.episodes; w = $jf.scope }
+            $info = Fmt-Info @{ p = $jf.preset; a = $jf.audio; b = [long]$r.bytes; t = [long]$r.secs; q = $r.vmaf; s = [long]$r.srcBytes; c = $r.episodes; w = $jf.scope; m = $env:COMPUTERNAME; e = $jf.encoder }
         } elseif ($jf.items) {
             # c = episodes in the job, n = compressed, f = failed, w = season/show, x = first problem (last: may be cut)
             $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; c = $r.episodes; n = $r.done; f = $r.failed; w = $jf.scope; x = ([string]$r.problem -replace '[;=+]', ' ') }
         } else {
-            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }) }
+            $info = Fmt-Info @{ p = $jf.preset; b = [long]$r.bytes; s = [long]$r.srcBytes; dv = $(if ($r.dv) { 1 } else { 0 }); m = $env:COMPUTERNAME; e = $jf.encoder }
         }
         Swap-Label $w.Section $w.Item.ratingKey $j.Tag (Job-Label $j 'done' $info)
         if ($mode -eq 'compress' -and $jf.items) {
@@ -832,21 +850,16 @@ function Get-DoviTool {
 function Setup-Compression {
     Say ''
     Say 'Encoding / compression' Cyan
-    Say 'The dashboard can shrink big movies (for example a 70 GB 4K disc rip to about 15-20 GB, keeping'
-    Say 'Dolby Vision). Only one PC should do this: the one with the AMD Radeon graphics card.'
+    Say 'The dashboard can shrink big movies (for example a 70 GB 4K disc rip to 15-20 GB, keeping Dolby'
+    Say 'Vision). Every PC with this on takes the next waiting job, so a slower PC (like a file server) can'
+    Say 'work through the queue while your main PC is busy. It uses the graphics card if it has a suitable one.'
     $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name } | Where-Object { $_ })
     Say "Graphics on this PC: $($gpus -join ', ')"
-    if (-not @($gpus | Where-Object { $_ -match 'Radeon|AMD' }).Count) {
-        Say "This PC has no AMD Radeon graphics card, so it can't compress. It will handle quarantines only." Yellow
-        if (Compress-On) { $script:Cfg.compress.enabled = $false; Save-Config; Log 'Compression turned off (no AMD graphics card).' }
-        return
-    }
-    if (-not (Ask 'Use this PC for encoding / compression?' $true)) {
+    if (-not (Ask 'Use this PC for encoding / compression?' $(if ($script:Cfg.compress) { [bool]$script:Cfg.compress.enabled } else { $true }))) {
         if (Compress-On) { $script:Cfg.compress.enabled = $false; Save-Config; Log 'Compression turned off in setup.' }
         Say 'OK: this PC will handle quarantines only. Run setup again to change this.'
         return
     }
-
     # Tools it needs; each is only installed if you say yes
     $t = Find-Tools
     if (-not $t.ffmpeg -or -not $t.ffprobe) {
@@ -859,6 +872,19 @@ function Setup-Compression {
         if (Ask 'dovi_tool (keeps Dolby Vision, about 3 MB from github.com/quietvoid/dovi_tool) is not here. Download it now?' $true) {
             try { Get-DoviTool } catch { Say "  Download failed: $($_.Exception.Message)" Yellow }
         }
+    }
+
+    # Which encoders work here, and whether to take processor-only work (can be very slow on small PCs)
+    $t = Find-Tools
+    if ($t.ffmpeg) {
+        Say 'Testing which encoders work on this PC...'
+        $script:FoundEncoders = @(Test-Encoders $t.ffmpeg)
+        foreach ($id in $script:FoundEncoders) { Say "  found: $($Encoders[$id].Label)" Green }
+        if (-not @($script:FoundEncoders | Where-Object { $Encoders[$_].Kind -ne 'cpu' }).Count) { Say '  No graphics-card encoder: only processor encodes, which are slow.' Yellow }
+        $threads = [Environment]::ProcessorCount
+        $prevCpu = if ($script:Cfg.compress -and $null -ne $script:Cfg.compress.allowCpu) { [bool]$script:Cfg.compress.allowCpu } else { $threads -ge 8 }
+        Say "Processor-only jobs (4K Extreme, and AV1 without a graphics AV1 encoder) are the slowest: with $threads threads here, a 2-hour 4K film can take $(if ($threads -ge 12) { 'about a day' } elseif ($threads -ge 8) { 'one to two days' } else { 'several days' })."
+        $script:AllowCpu = Ask 'Should this PC take processor-only jobs too?' $prevCpu
     }
 
     # Where the half-finished encodes live: the local drive with the most free space, unless you pick another
@@ -1169,6 +1195,7 @@ function Setup-Rips {
 
 # ---------------------------------------------------------------- main
 
+. (Join-Path $Root 'encoders.ps1')
 . (Join-Path $Root 'rips.ps1')
 . (Join-Path $Root 'live.ps1')
 

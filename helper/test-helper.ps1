@@ -339,6 +339,26 @@ $JobsDir = Join-Path $root 'live-jobs'
     Remove-Item Function:\Invoke-WebRequest, Function:\Publish-Live, Function:\Send-Ntfy, Function:\Trash-Roots
     $script:TestDrive = $drive
 
+    # 23. Choosing an encoder for a job on this PC
+    . (Join-Path $PSScriptRoot 'encoders.ps1')
+    $amdPc = [pscustomobject]@{ encoders = @('amf', 'x265', 'x265slow', 'svtav1'); allowCpu = $true }
+    $n100 = [pscustomobject]@{ encoders = @('qsv', 'x265', 'x265slow', 'svtav1'); allowCpu = $false }
+    Check 'encoder: graphics card for normal levels' ((Choose-Encoder $amdPc 'high' '4k' 'hevc').encoder -eq 'amf')
+    Check 'encoder: Extreme uses the processor''s efficient encoder when allowed' ((Choose-Encoder $amdPc 'extreme' '4k' 'hevc').encoder -eq 'x265slow')
+    Check 'encoder: Extreme on a PC without processor jobs uses its graphics card' ((Choose-Encoder $n100 'extreme' '4k' 'hevc').encoder -eq 'qsv')
+    Check 'encoder: AV1 falls back to the processor when allowed' ((Choose-Encoder $amdPc 'normal' '4k' 'av1').encoder -eq 'svtav1')
+    Check 'encoder: a PC that can''t do the job leaves it for another' ($null -eq (Choose-Encoder $n100 'normal' '4k' 'av1'))
+    Check 'encoder: old setups (no encoder list) keep AMD' ((Choose-Encoder ([pscustomobject]@{ allowCpu = $true }) 'normal' '4k' 'hevc').encoder -eq 'amf')
+    $cal = [pscustomobject]@{ encoders = @('qsv'); allowCpu = $false; calibration = [pscustomobject]@{ qsv = [pscustomobject]@{ '4k' = [pscustomobject]@{ levels = [pscustomobject]@{ high = 23.5 } } } } }
+    $c = Choose-Encoder $cal 'high' '4k' 'hevc'
+    Check 'encoder: calibrated setting wins over the default' ($c.q -eq 23.5 -and $c.calibrated)
+    Check 'encoder: default setting until calibrated' ((Choose-Encoder $cal 'normal' '4k' 'hevc').q -eq 25)
+    Check 'options: AV1 request' ((Parse-CompressOptions 'p=4kh;v=av1').codec -eq 'av1' -and (Parse-CompressOptions 'p=4kh').codec -eq 'hevc')
+    $q = (Codec-Args $Encoders.nvenc 26 $true $false) -join ' '
+    Check 'NVENC command: constant quality, 10-bit profile' ($q -match 'hevc_nvenc' -and $q -match '-cq 26' -and $q -match 'main10' -and $q -match '-b:v 0')
+    $q = (Codec-Args $Encoders.qsv 22 $true $true) -join ' '
+    Check 'Quick Sync command: global quality, frames from the CPU as p010' ($q -match 'hevc_qsv' -and $q -match '-global_quality 22' -and $q -match 'p010le')
+
     # 16. Pause alerts: only after 2 minutes, at most every 30 minutes, "resumed" only after a "paused"
     $PauseAlertAfter = 120; $PauseAlertEvery = 1800; $PresetLabels = @{ '4kh' = '4K High' }
     $jp = [pscustomobject]@{ mode = 'compress'; title = 'Dune'; year = 2021; preset = '4kh' }
