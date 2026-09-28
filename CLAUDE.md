@@ -187,7 +187,10 @@ no job starts, and compress.ps1's `Pause-Reason` freezes the running encode (res
 empty: request must name this PC, be < 10 min old (ntfy replays old messages to a restarted helper), not be
 in `jobs\done-requests.txt`, and only batches the helper itself lists are deleted. The Beelink joins via
 `Setup-Channel` (paste the topic). Tray: WinForms NotifyIcon in its own STA PowerShell, started by the
-helper (`Start-Tray`), one per folder (mutex), reads `state.json` every 3 s; tooltip max 63 characters.
+helper (`Start-Tray`), one per folder (mutex), reads `state.json` every 3 s; tooltip max 63 characters. Watchdog (0.3.8): helper dead (no live pid or state.json
+older than 3 min) for 2 min and the tray still running (= you didn't Quit) -> `Restart-Helper`, at most every 10 min.
+`Restart-Helper` waits for the task to really stop before starting it: starting too early is ignored (task runs
+one copy), which left the helper stopped on 2026-09-27 (exit 0xC000013A).
 Gotcha: a test helper function named `Cmd` hijacked `cmd /c` (names are case-insensitive): don't.
 
 ### Compression gotchas

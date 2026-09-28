@@ -41,7 +41,8 @@ nothing, so the encode isn't left running unattended: let it finish or Stop it i
 The helper puts an icon in the Windows notification area (the ^ next to the clock): orange when idle,
 green while compressing or ripping, grey when paused, red if the helper isn't running. Hover for what it's
 doing; double-click to open the dashboard; right-click for **Pause all compressions / Resume**, Status,
-the log folder, Empty _TO_DELETE, Run setup again, Restart helper and Quit.
+the log folder, Empty _TO_DELETE, Run setup again, Restart helper and Quit. If the helper ever stops without you choosing Quit,
+the tray starts it again after 2 minutes.
 
 **Pause all compressions** (tray or dashboard > Jobs) freezes a running encode where it is and holds the
 queue until you resume; nothing is lost.

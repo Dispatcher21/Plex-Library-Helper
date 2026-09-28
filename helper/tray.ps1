@@ -71,13 +71,28 @@ $miCheck.add_Click({ Run-Cmd 'Check status.cmd' })
 $miLogs.add_Click({ Start-Process explorer.exe (Join-Path $Root 'logs') })
 $miTrash.add_Click({ Run-Cmd 'Empty _TO_DELETE.cmd' })
 $miSetup.add_Click({ Run-Cmd 'Set up Plex Library Helper.cmd' })
-$miRestart.add_Click({
-    # Encodes are separate programs, so they keep running; the restarted helper picks them up again
+# Stop (if running), wait until Windows has really stopped it, start, and check it came back. Starting too
+# early is ignored (the task never runs two copies), which used to leave the helper stopped.
+function Restart-Helper([string]$why) {
+    $old = if ($script:state) { [int]$script:state.pid } else { 0 }
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($script:state -and $script:state.pid) { Stop-Process -Id ([int]$script:state.pid) -Force -ErrorAction SilentlyContinue }
+    if ($old) { Stop-Process -Id $old -Force -ErrorAction SilentlyContinue }
+    for ($i = 0; $i -lt 40; $i++) {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $task) { $ni.ShowBalloonTip(5000, 'Plex Library Helper', 'Not set up to start with Windows: run setup again.', 'Warning'); return }
+        if ($task.State -ne 'Running' -and -not ($old -and (Get-Process -Id $old -ErrorAction SilentlyContinue))) { break }
+        Start-Sleep -Milliseconds 500
+    }
     Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    $ni.ShowBalloonTip(3000, 'Plex Library Helper', 'Restarting...', 'Info')
-})
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep -Milliseconds 500
+        $s = Read-State
+        if ($s -and [int]$s.pid -ne $old -and (Get-Process -Id ([int]$s.pid) -ErrorAction SilentlyContinue)) { $ni.ShowBalloonTip(3000, 'Plex Library Helper', "$why - running again.", 'Info'); $script:downSince = $null; return }
+    }
+    $ni.ShowBalloonTip(6000, 'Plex Library Helper', "$why, but it didn't come back. Try Run setup again.", 'Warning')
+}
+# Encodes are separate programs, so they keep running; the restarted helper picks them up again
+$miRestart.add_Click({ Restart-Helper 'Helper restarted' })
 $miQuit.add_Click({
     $busy = $script:state -and @($script:state.jobs).Count
     $msg = if ($busy) { "An encode is running. It keeps going, but nothing reports on it until the helper starts again (next sign-in, or Run setup again).`n`nQuit the Plex Library Helper?" } else { "Quit the Plex Library Helper? It starts again the next time you sign in to Windows." }
@@ -92,9 +107,15 @@ function Update-Tray {
     $paused = Test-Path -LiteralPath $PauseFile
     $miPause.Text = if ($paused) { 'Resume compressions' } else { 'Pause all compressions' }
     if (-not (Helper-Alive $s)) {
-        $ni.Icon = $Icons.off; $ni.Text = 'Plex Library Helper: not running'; $miStatus.Text = 'Not running (Restart helper to start it)'
+        $ni.Icon = $Icons.off; $ni.Text = 'Plex Library Helper: not running'; $miStatus.Text = 'Not running'; $miRestart.Text = 'Start helper'
+        # Watchdog: the tray only runs while you haven't chosen Quit, so a helper that has been down for
+        # 2 minutes is started again (at most every 10 minutes, so a helper that can't start doesn't loop)
+        if (-not $script:downSince) { $script:downSince = Get-Date }
+        $quiet = -not $script:lastAutoStart -or ((Get-Date) - $script:lastAutoStart).TotalMinutes -ge 10
+        if (((Get-Date) - $script:downSince).TotalMinutes -ge 2 -and $quiet) { $script:lastAutoStart = Get-Date; Restart-Helper 'The helper had stopped' }
         return
     }
+    $script:downSince = $null; $miRestart.Text = 'Restart helper'
     $parts = @(); $lines = @()
     foreach ($j in @($s.jobs)) {
         if (-not $j) { continue }
