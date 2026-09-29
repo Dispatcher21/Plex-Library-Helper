@@ -274,6 +274,11 @@ and caps on change + every 6 h; torrents on state changes, progress every 20 min
 After a 429, `Publish-Live` stays quiet for 30 min (`$script:NtfyQuietUntil`) so phone notifications get the
 rest. Dashboard reads `since=12h` (ntfy.sh keeps 12 h), PCs count as silent after 70 min, rip card "No update"
 after 8 min, qBittorrent card hidden after 70 min. Busy day estimate: ~150-190 for both PCs.
+Measured 2026-09-29 (ntfy `/v1/account`: basis ip, 250/day, 0 left by 07:12 local; the day resets at 00:00 UTC):
+in 8 h ntfy held 94 heartbeats from the **Beelink (still 0.3.7, every 5 min = ~270/day on its own)**, 48 from this PC
+(mostly the 0.4.0 benchmark reporting every step; 0.4.3 = ~1/hour) and 8 phone notifications. The Beelink must run
+0.4.3+. **Dashboard commands never worked before 0.4.4:** PS 5.1 returns ntfy's `/json` list (application/x-ndjson)
+as `byte[]`, so `.Content -split` found nothing; `Web-Text` decodes it. Test fakes must return bytes like the real one.
 The steps after an encode are named "Finishing up: ..." (with a log line each; they take 20-40 min on 4K films:
 audio, mkvmerge, verify, copy); the app and dashboard add "the last steps can take 20-40 min".
 

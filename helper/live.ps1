@@ -57,11 +57,18 @@ function Set-Paused([bool]$on, [string]$by) {
 function Done-Requests { $f = Join-Path $JobsDir 'done-requests.txt'; if (Test-Path $f) { @(Get-Content -LiteralPath $f) } else { @() } }
 function Remember-Request([string]$id) { if (-not (Test-Path $JobsDir)) { New-Item -ItemType Directory -Force $JobsDir | Out-Null }; Add-Content -LiteralPath (Join-Path $JobsDir 'done-requests.txt') -Value $id }
 
+# Windows PowerShell 5.1 gives the body as bytes, not text, for types it doesn't know as text; ntfy's
+# message list (application/x-ndjson) is one. Reading it as text silently found no commands until 0.4.4.
+function Web-Text($response) {
+    $c = $response.Content
+    if ($c -is [byte[]]) { [Text.Encoding]::UTF8.GetString($c) } else { [string]$c }
+}
+
 function Read-Commands {
     if (-not (Channel-On)) { return }
     $n = $script:Cfg.notify
     $since = if ($script:CmdSince) { $script:CmdSince } else { '10m' }
-    $raw = (Invoke-WebRequest -Uri "$($n.server.TrimEnd('/'))/$($n.topic)-cmd/json?poll=1&since=$since" -UseBasicParsing -TimeoutSec 15).Content
+    $raw = Web-Text (Invoke-WebRequest -Uri "$($n.server.TrimEnd('/'))/$($n.topic)-cmd/json?poll=1&since=$since" -UseBasicParsing -TimeoutSec 15)
     foreach ($line in ($raw -split "`n" | Where-Object { $_.Trim() })) {
         $m = try { $line | ConvertFrom-Json } catch { $null }
         if (-not $m -or $m.event -ne 'message') { continue }

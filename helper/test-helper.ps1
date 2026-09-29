@@ -287,10 +287,11 @@ $JobsDir = Join-Path $root 'live-jobs'
     $DashboardUrl = 'https://example.test/'
     Check 'rip: dashboard link carries the topic after #' ((Dashboard-Link) -eq 'https://example.test/#ntfy=pld-abc')
     $script:Rip = @{ active = $true; id = 'r1' }; $script:RipCmdSince = $null
-    function Invoke-WebRequest { param($Uri) $script:AskedUri = $Uri; [pscustomobject]@{ Content = (@(
+    # ntfy's list comes back as bytes in Windows PowerShell (application/x-ndjson), as the real one does
+    function Invoke-WebRequest { param($Uri) $script:AskedUri = $Uri; [pscustomobject]@{ Content = [Text.Encoding]::UTF8.GetBytes((@(
         '{"id":"a1","event":"open"}',
         ('{"id":"a2","event":"message","message":' + ('{"cmd":"autocompress","id":"old","on":true}' | ConvertTo-Json) + '}'),
-        ('{"id":"a3","event":"message","message":' + ('{"cmd":"autocompress","id":"r1","on":true}' | ConvertTo-Json) + '}')) -join "`n") } }
+        ('{"id":"a3","event":"message","message":' + ('{"cmd":"autocompress","id":"r1","on":true}' | ConvertTo-Json) + '}')) -join "`n")) } }
     $JobsDir = Join-Path $root 'live-jobs'; $PauseFile = Join-Path $JobsDir 'PAUSED'; $script:LiveStarted = (Get-Date).AddMinutes(-1); $script:CmdSince = $null
     Read-Commands
     Check 'rip: switch for this rip applied, others ignored, position remembered' ($script:Rip.autoCompress -eq $true -and $script:CmdSince -eq 'a3' -and $script:AskedUri -eq 'https://ntfy.sh/pld-abc-cmd/json?poll=1&since=10m')
@@ -312,7 +313,7 @@ $JobsDir = Join-Path $root 'live-jobs'
     # (not called Cmd: PowerShell ignores case, so that would hijack every later 'cmd /c')
     function Ntfy-Msg($id, $obj, $age = 0) { '{"id":"' + $id + '","event":"message","time":' + ($now - $age) + ',"message":' + (($obj | ConvertTo-Json -Compress) | ConvertTo-Json) + '}' }
     function Serve($lines) { $script:Served = $lines -join "`n" }
-    function Invoke-WebRequest { [pscustomobject]@{ Content = $script:Served } }
+    function Invoke-WebRequest { [pscustomobject]@{ Content = [Text.Encoding]::UTF8.GetBytes([string]$script:Served) } }   # bytes, like ntfy
     function Publish-Live($o) { $script:Published += , $o }
     function Send-Ntfy { }
     $script:Published = @(); $script:CmdSince = $null

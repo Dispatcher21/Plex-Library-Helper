@@ -29,7 +29,7 @@ function Qbt-Running { [bool](Get-Process qbittorrent -ErrorAction SilentlyConti
 function Qbt-Get([string]$path) {
     $u = Qbt-Url
     $r = Invoke-WebRequest -Uri "$u$path" -Headers @{ Referer = $u } -TimeoutSec 5 -UseBasicParsing
-    $r.Content
+    if ($r.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($r.Content) } else { [string]$r.Content }
 }
 function Qbt-Post([string]$path, [hashtable]$form = @{}) {
     $u = Qbt-Url
